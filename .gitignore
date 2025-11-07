@@ -1,0 +1,7 @@
+__pycache__/
+*_report.json
+*_report.html
+*_resources.csv
+prostate_report.*
+xnat_upenn_report.*
+*.pyc

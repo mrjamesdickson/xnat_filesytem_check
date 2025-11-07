@@ -1,0 +1,13 @@
+Generated at: 2025-11-06T00:00:00+00:00
+Projects: 2 | Sessions: 4 | Resources: 5 | Files checked: 18
+Scans: 3 | Assessors: 1
+Session resources: 3 | Scan resources: 1 | Assessor resources: 1
+Files found: 16 | Missing: 1 | Unresolved: 1
+Catalogs checked: 2 | Catalog entries: 18 | Missing catalog entries: 1 | Catalog errors: 0
+Missing files:
+  project=DEMO_PROJECT session=DEMO_SESSION_01 resource=NIFTI scope=scan path=/data/xnat/archive/DEMO_PROJECT/SCANS/3/NIFTI/scan1.nii.gz
+Unresolved files:
+  project=DEMO_PROJECT session=DEMO_SESSION_02 resource=OUTPUT scope=assessor file=analysis.log
+Missing catalog entries:
+  catalog=/data/xnat/archive/DEMO_PROJECT/arc001/DEMO_SESSION_01/RESOURCES/SCANS/SCANS_catalog.xml entry=scan1.nii.gz resolved_path=/data/xnat/archive/DEMO_PROJECT/arc001/DEMO_SESSION_01/RESOURCES/SCANS/scan1.nii.gz
+
