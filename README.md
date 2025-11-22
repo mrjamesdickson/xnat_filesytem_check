@@ -1,6 +1,142 @@
 # XNAT Filesystem Check Plugin
 
-A comprehensive XNAT plugin for validating filesystem integrity by checking if files referenced in XNAT exist on the filesystem. This plugin provides both a Python command-line tool and a web-based UI integrated directly into XNAT.
+A comprehensive XNAT plugin for validating filesystem integrity by checking if files referenced in the XNAT database exist on the filesystem. This plugin ensures data consistency between XNAT's catalog and the physical archive.
+
+## Purpose
+
+**Validates that the XNAT database matches the actual filesystem** by checking:
+- ✅ Files referenced in XNAT exist on disk
+- ✅ File paths can be resolved correctly
+- ✅ Catalog.xml files match actual files
+- ❌ Identifies missing files
+- ❌ Identifies unresolvable file references
+
+This is critical for:
+- Data integrity verification
+- Migration validation
+- Archive maintenance
+- Disaster recovery planning
+
+---
+
+## How It Works
+
+### 1. **Database-to-Filesystem Validation**
+
+The plugin traverses the XNAT database hierarchy and validates each file reference:
+
+```
+XNAT Database                    Filesystem Check
+─────────────                   ──────────────────
+Project(s)                  →   Verify project directory exists
+  └─ Session(s)             →   Verify session directory exists
+      ├─ Resources          →   Check session-level files
+      ├─ Scan(s)            →   Verify scan directories
+      │   └─ Resources      →   Check scan files (DICOM, NIFTI, etc.)
+      └─ Assessor(s)        →   Verify assessor directories
+          └─ Resources      →   Check assessor output files
+```
+
+### 2. **What Gets Checked**
+
+#### Session-Level Resources
+Files attached directly to sessions (e.g., documents, QC reports):
+- Path: `/archive/{project}/arc{N}/{session}/RESOURCES/{resource}/`
+- Checks: File existence, path resolution, catalog verification
+
+#### Scan Resources
+DICOM and imaging data files:
+- Path: `/archive/{project}/arc{N}/{session}/SCANS/{scan_id}/{resource}/`
+- Checks: DICOM files, NIFTI conversions, snapshot images, metadata
+
+#### Assessor Resources
+Analysis and processing outputs:
+- Path: `/archive/{project}/arc{N}/{session}/ASSESSORS/{assessor_id}/{resource}/`
+- Checks: FreeSurfer outputs, pipeline results, QC assessments
+
+#### Catalog Files
+XML catalogs that index file metadata:
+- File: `catalog.xml` in each resource directory
+- Checks: XML validity, file entries match actual files
+
+### 3. **Path Resolution Strategy**
+
+The plugin uses multiple strategies to locate files:
+
+1. **Absolute Paths**: If file URI is absolute, check directly
+2. **Relative to Archive**: Resolve relative to XNAT archive root
+3. **Standard XNAT Layout**: Construct path using project/session/resource structure
+4. **Arc Directory Search**: Find appropriate arc### directory under project
+5. **Fallback Strategies**: Check alternative naming conventions (RESOURCES vs resources)
+
+Example resolution:
+```
+Database Reference: /data/archive/MY_PROJECT/arc001/SESSION_001/SCANS/1/DICOM/image.dcm
+Resolution Steps:
+1. Check if absolute path exists
+2. If not, check: {archive_root}/MY_PROJECT/arc001/SESSION_001/SCANS/1/DICOM/image.dcm
+3. If not, check: {archive_root}/MY_PROJECT/arc001/SESSION_001/SCANS/1/RESOURCES/DICOM/image.dcm
+4. Report as missing if all strategies fail
+```
+
+### 4. **Results and Reporting**
+
+The plugin generates comprehensive reports showing:
+
+#### Summary Statistics
+- **Projects**: Number of projects checked
+- **Sessions**: Total sessions validated
+- **Resources**: Total resources examined
+- **Files Checked**: Total file references validated
+- **Files Found**: Files successfully located ✅
+- **Files Missing**: Files referenced in DB but not on disk ❌
+- **Files Unresolved**: File references that couldn't be mapped to paths ⚠️
+
+#### Missing Files Report
+For each missing file:
+```json
+{
+  "project": "PROJECT_ID",
+  "session": "SESSION_LABEL",
+  "resource": "RESOURCE_NAME",
+  "scope": "scan|session|assessor",
+  "scan": "SCAN_ID",
+  "path": "/expected/path/to/file.dcm",
+  "status": "missing"
+}
+```
+
+#### Unresolved Files Report
+Files that couldn't be mapped to filesystem paths:
+```json
+{
+  "project": "PROJECT_ID",
+  "session": "SESSION_LABEL",
+  "resource": "RESOURCE_NAME",
+  "file": "filename.ext",
+  "status": "unresolved",
+  "error": "Unable to resolve path from URI"
+}
+```
+
+#### Resource Details
+Per-resource breakdown:
+```json
+{
+  "project": "PROJECT_ID",
+  "session": "SESSION_LABEL",
+  "resource": "DICOM",
+  "scope": "scan",
+  "status": "ok",
+  "filesListed": 150,
+  "filesFound": 148,
+  "filesMissing": 2,
+  "filesUnresolved": 0,
+  "catalogPath": "/archive/.../catalog.xml"
+}
+```
+
+---
 
 ## Features
 
@@ -12,6 +148,108 @@ A comprehensive XNAT plugin for validating filesystem integrity by checking if f
 - **Missing File Detection**: Identify files referenced in XNAT but missing on disk
 - **Catalog Verification**: Optional verification of catalog.xml files
 - **REST API**: Full REST API for programmatic access and automation
+
+---
+
+## What It Checks vs. What It Doesn't Check
+
+### ✅ What It Checks
+
+1. **File Existence**: Does each file referenced in XNAT exist on the filesystem?
+2. **Path Resolution**: Can file URIs be correctly mapped to filesystem paths?
+3. **Resource Integrity**: Are all files listed in a resource present?
+4. **Catalog Consistency**: Do catalog.xml entries match actual files? (optional)
+5. **Access Permissions**: Can XNAT read the file locations?
+
+### ❌ What It Doesn't Check (Yet - See TODOs)
+
+1. **File Content Integrity**: Not validating file checksums or content
+2. **DICOM Validity**: Not parsing/validating DICOM file structure
+3. **Orphaned Files**: Not identifying files on disk not referenced in XNAT
+4. **Disk Space**: Not checking available storage or quotas
+5. **Duplicate Files**: Not detecting duplicate file content
+6. **File Permissions**: Not validating read/write permissions in detail
+7. **Symbolic Links**: Not following or validating symlinks
+8. **Archive Compression**: Not checking compressed archives (ZIP, TAR)
+
+---
+
+## TODO: Future Improvements
+
+### High Priority
+
+- [ ] **Orphaned File Detection**: Scan filesystem and identify files NOT referenced in XNAT database
+  - Reverse check: Find files on disk that aren't cataloged in XNAT
+  - Report size and age of orphaned files
+  - Suggest cleanup actions
+
+- [ ] **Checksum Validation**: Verify file integrity using checksums
+  - Compare stored checksums (if available) with actual file checksums
+  - Detect corrupted files even if they exist
+  - Generate checksums for files that don't have them
+
+- [ ] **DICOM Header Validation**: Parse and validate DICOM files
+  - Check DICOM file structure
+  - Validate required DICOM tags
+  - Verify PatientID, StudyInstanceUID consistency
+  - Detect DICOM format corruption
+
+- [ ] **Size Discrepancy Detection**: Compare expected vs actual file sizes
+  - Validate file size matches database records
+  - Identify truncated or incomplete files
+  - Report unusually small/large files
+
+### Medium Priority
+
+- [ ] **Automatic Repair Options**: Attempt to fix common issues
+  - Rebuild catalog.xml from actual files
+  - Update incorrect paths in database
+  - Re-index missing resources
+
+- [ ] **Scheduled Checks**: Background checking capabilities
+  - Cron-style scheduled validation
+  - Incremental checks (only recent changes)
+  - Email notifications of issues
+
+- [ ] **Performance Optimization**: Handle very large archives
+  - Parallel file checking
+  - Database query optimization
+  - Incremental reporting
+  - Resume capability for interrupted checks
+
+- [ ] **Export/Import Validation**: Pre/post migration checks
+  - Validate before export
+  - Generate manifest for transfer
+  - Validate after import
+  - Diff reports between source and destination
+
+### Low Priority
+
+- [ ] **Compression Support**: Handle archived/compressed resources
+  - Check files inside ZIP/TAR archives
+  - Validate archive integrity
+  - Report on compression ratios
+
+- [ ] **Symbolic Link Handling**: Follow and validate symlinks
+  - Detect broken symlinks
+  - Validate link targets exist
+  - Report circular link references
+
+- [ ] **Historical Tracking**: Track changes over time
+  - Store check results in database
+  - Trend analysis of issues
+  - Alert on new problems
+
+- [ ] **Integration with XNAT Prearchive**: Validate prearchive files
+  - Check files before archiving
+  - Prevent archiving incomplete sessions
+
+- [ ] **Custom Validation Rules**: User-defined validation logic
+  - Plugin extension points
+  - Custom validators per project
+  - Flexible rule configuration
+
+---
 
 ## Components
 
@@ -31,11 +269,13 @@ A standalone Python script for filesystem checking:
 - Supports multiple output formats
 - Detailed logging and error reporting
 
+---
+
 ## Installation
 
 ### Prerequisites
 
-- XNAT 1.8.9 or later
+- XNAT 1.8.11 or later
 - Java 11 or later
 - Node.js 16.x or later (for building the frontend)
 - Gradle 7.x or later
@@ -77,6 +317,8 @@ A standalone Python script for filesystem checking:
    - Log into XNAT as an administrator
    - Navigate to Administer → Plugin Settings
    - Look for "XNAT Filesystem Check Plugin" in the list
+
+---
 
 ## Usage
 
@@ -142,13 +384,6 @@ curl -X POST "https://xnat.example.com/xapi/filesystem-check/check" \
   }'
 ```
 
-#### Get Status
-
-```bash
-curl -X GET "https://xnat.example.com/xapi/filesystem-check/status" \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
 ### Command-line Tool
 
 The Python script can be used independently:
@@ -183,98 +418,55 @@ python xnat_fs_check.py \
   --catalog-root /data/xnat/archive
 ```
 
-## Report Format
+---
 
-### Summary Statistics
+## Understanding the Results
 
-Reports include comprehensive statistics:
-- **Project Summary**: Number of projects, sessions, scans, and assessors
-- **Filesystem Results**: Files checked, found, missing, and unresolved
-- **Resource Breakdown**: Statistics by resource type (session, scan, assessor)
+### Interpreting Statistics
 
-### Missing Files
+- **Projects/Sessions/Scans/Assessors**: Counts of XNAT objects checked
+- **Resources**: Number of file collections examined
+- **Files Total**: All file references found in XNAT database
+- **Files Found** ✅: Files that exist on filesystem at expected location
+- **Files Missing** ❌: Files in database but NOT on filesystem - **DATA LOSS**
+- **Files Unresolved** ⚠️: Files whose paths couldn't be determined - configuration issue
 
-For each missing file:
-- Project and session identifiers
-- Resource name and scope
-- Expected filesystem path
-- Scan or assessor ID (if applicable)
+### Common Scenarios
 
-### Unresolved Files
-
-Files that could not be mapped to filesystem paths:
-- File metadata from XNAT
-- Reason for unresolved status
-
-### Resource Details
-
-Per-resource statistics:
-- Files listed in resource
-- Files found vs. missing
-- Catalog path (if available)
-- Error messages (if any)
-
-## Configuration
-
-### Plugin Settings
-
-The plugin respects XNAT's standard configuration:
-- Archive path from XNAT site settings
-- User permissions and project access
-- Security and authentication settings
-
-### Customization
-
-Key configuration options:
-- `maxFiles`: Limit number of files to check (useful for testing)
-- `verifyCatalogs`: Enable catalog.xml verification
-- Path resolution strategies (configurable in service layer)
-
-## Development
-
-### Building Frontend Only
-
-```bash
-cd src/main/webapp/xnat-filesystem-check
-npm install
-npm run build
+#### Scenario 1: All Files Found ✅
 ```
-
-### Development Mode
-
-```bash
-cd src/main/webapp/xnat-filesystem-check
-npm run dev
+Files Checked: 10,000
+Files Found: 10,000
+Files Missing: 0
+Files Unresolved: 0
 ```
+**Result**: Perfect! Database matches filesystem.
 
-### Running Tests
-
-```bash
-./gradlew test
+#### Scenario 2: Missing Files ❌
 ```
+Files Checked: 10,000
+Files Found: 9,850
+Files Missing: 150
+Files Unresolved: 0
+```
+**Result**: 150 files referenced in XNAT don't exist on disk. Investigate:
+- Were files deleted manually?
+- Was there a failed migration?
+- Disk corruption?
 
-## Architecture
+#### Scenario 3: Unresolved Files ⚠️
+```
+Files Checked: 10,000
+Files Found: 9,500
+Files Missing: 0
+Files Unresolved: 500
+```
+**Result**: Path resolution issues. Check:
+- Is archive path configured correctly in XNAT?
+- Non-standard directory structure?
+- Incorrect URI formats in database?
 
-### Backend (Java)
-
-- **REST API** (`FilesystemCheckRestApi.java`): HTTP endpoints
-- **Service Layer** (`FilesystemCheckService.java`): Business logic
-- **Models** (`models/`): Data transfer objects
-- **Plugin Class** (`FilesystemCheckPlugin.java`): Plugin initialization
-
-### Frontend (React)
-
-- **Main App** (`FilesystemCheckApp.jsx`): Primary component
-- **Project Selector** (`ProjectSelector.jsx`): Project selection UI
-- **Check Options** (`CheckOptions.jsx`): Configuration options
-- **Results Display** (`CheckResults.jsx`): Report visualization
-
-### CLI Tool (Python)
-
-- **XNAT Client**: REST API integration
-- **Filesystem Checker**: Core validation logic
-- **Report Generation**: Multiple output formats
-- **Catalog Verification**: XML parsing and validation
+---
 
 ## Troubleshooting
 
@@ -297,10 +489,10 @@ npm run dev
 
 ### Missing Files Reported
 
-1. Verify archive path configuration in XNAT
-2. Check filesystem permissions
-3. Ensure archive structure follows XNAT conventions
-4. Review path resolution strategies in service layer
+1. **Verify archive path configuration** in XNAT site settings
+2. **Check filesystem permissions** - can XNAT read the archive?
+3. **Review archive structure** - does it follow XNAT conventions?
+4. **Check for manual deletions** - were files removed outside XNAT?
 
 ### Performance Issues
 
@@ -308,6 +500,8 @@ npm run dev
 2. Run checks during off-peak hours
 3. Consider per-project checks instead of full archive
 4. Monitor server resources during checks
+
+---
 
 ## Contributing
 
@@ -318,9 +512,15 @@ Contributions are welcome! Please:
 4. Add tests if applicable
 5. Submit a pull request
 
+See [TODO section](#todo-future-improvements) for improvement ideas.
+
+---
+
 ## License
 
 This project is licensed under the MIT License.
+
+---
 
 ## Support
 
@@ -328,6 +528,8 @@ For issues and questions:
 - Open an issue on GitHub
 - Contact your XNAT administrator
 - Consult XNAT documentation: https://wiki.xnat.org
+
+---
 
 ## Changelog
 
@@ -339,3 +541,6 @@ For issues and questions:
 - Multi-format reporting
 - Catalog verification
 - Per-project and archive-wide checks
+- Database-to-filesystem validation
+- Missing file detection
+- Path resolution strategies
