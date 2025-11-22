@@ -1,0 +1,111 @@
+buildscript {
+    ext {
+        xnatVersion = '1.8.9'
+        springVersion = '5.3.23'
+        jacksonVersion = '2.14.1'
+    }
+    repositories {
+        mavenCentral()
+        maven {
+            url 'https://nrgxnat.jfrog.io/nrgxnat/libs-release'
+        }
+    }
+    dependencies {
+        classpath "org.nrg.xnat.build:xnat-data-builder:${xnatVersion}"
+    }
+}
+
+plugins {
+    id 'java'
+    id 'maven-publish'
+    id 'com.github.node-gradle.node' version '3.5.1'
+}
+
+group = 'org.nrg.xnat.plugins'
+version = '1.0.0-SNAPSHOT'
+description = 'XNAT Filesystem Check Plugin'
+
+sourceCompatibility = 11
+targetCompatibility = 11
+
+repositories {
+    mavenCentral()
+    maven {
+        url 'https://nrgxnat.jfrog.io/nrgxnat/libs-release'
+    }
+    maven {
+        url 'https://nrgxnat.jfrog.io/nrgxnat/ext-release'
+    }
+}
+
+dependencies {
+    implementation "org.nrg.xnat:web:${xnatVersion}"
+    implementation "org.nrg.xnat:xnat-data-models:${xnatVersion}"
+    implementation "org.nrg:prefs:${xnatVersion}"
+    implementation "org.nrg:framework:${xnatVersion}"
+
+    implementation "org.springframework:spring-web:${springVersion}"
+    implementation "org.springframework:spring-webmvc:${springVersion}"
+    implementation "org.springframework:spring-context:${springVersion}"
+
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+    implementation "com.fasterxml.jackson.core:jackson-annotations:${jacksonVersion}"
+
+    implementation 'org.slf4j:slf4j-api:1.7.36'
+    implementation 'javax.servlet:javax.servlet-api:4.0.1'
+    implementation 'io.swagger:swagger-annotations:1.6.8'
+
+    compileOnly 'org.projectlombok:lombok:1.18.24'
+    annotationProcessor 'org.projectlombok:lombok:1.18.24'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.mockito:mockito-core:4.8.0'
+}
+
+node {
+    version = '16.18.0'
+    download = true
+    nodeProjectDir = file("${projectDir}/src/main/webapp/xnat-filesystem-check")
+}
+
+task npmInstall(type: com.github.gradle.node.npm.task.NpmTask) {
+    args = ['install']
+    workingDir = file("${projectDir}/src/main/webapp/xnat-filesystem-check")
+}
+
+task npmBuild(type: com.github.gradle.node.npm.task.NpmTask, dependsOn: npmInstall) {
+    args = ['run', 'build']
+    workingDir = file("${projectDir}/src/main/webapp/xnat-filesystem-check")
+}
+
+processResources.dependsOn npmBuild
+
+jar {
+    archiveFileName = "${project.name}-${project.version}.jar"
+
+    into('META-INF/resources') {
+        from file("${projectDir}/src/main/webapp/xnat-filesystem-check/dist")
+    }
+
+    manifest {
+        attributes(
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version,
+            'Build-Date': new Date().format('yyyy-MM-dd HH:mm:ss'),
+            'XNAT-Plugin-Class': 'org.nrg.xnat.plugin.filesystemcheck.FilesystemCheckPlugin'
+        )
+    }
+}
+
+task copyJarToDocker(type: Copy, dependsOn: jar) {
+    from jar.archiveFile
+    into "${projectDir}/docker"
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+}

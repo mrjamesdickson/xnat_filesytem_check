@@ -1,0 +1,10 @@
+id: xnat-filesystem-check-plugin
+name: XNAT Filesystem Check Plugin
+version: 1.0.0-SNAPSHOT
+description: Validates XNAT filesystem integrity by checking if referenced files exist on disk
+vendor: XNAT Development Team
+pluginClass: org.nrg.xnat.plugin.filesystemcheck.FilesystemCheckPlugin
+features:
+  - filesystem-validation
+  - integrity-check
+  - report-generation
