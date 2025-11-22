@@ -28,7 +28,6 @@ import static org.springframework.web.bind.annotation.RequestMethod.POST;
 
 @Api("XNAT Filesystem Check API")
 @XapiRestController
-@RequestMapping(value = "/filesystem-check")
 @Slf4j
 public class FilesystemCheckRestApi extends AbstractXapiRestController {
 

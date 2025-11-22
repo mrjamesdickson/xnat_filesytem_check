@@ -1,17 +1,12 @@
 buildscript {
     ext {
-        xnatVersion = '1.8.9'
-        springVersion = '5.3.23'
-        jacksonVersion = '2.14.1'
+        xnatVersion = '1.8.11'
     }
     repositories {
         mavenCentral()
         maven {
             url 'https://nrgxnat.jfrog.io/nrgxnat/libs-release'
         }
-    }
-    dependencies {
-        classpath "org.nrg.xnat.build:xnat-data-builder:${xnatVersion}"
     }
 }
 
@@ -39,27 +34,29 @@ repositories {
 }
 
 dependencies {
-    implementation "org.nrg.xnat:web:${xnatVersion}"
-    implementation "org.nrg.xnat:xnat-data-models:${xnatVersion}"
-    implementation "org.nrg:prefs:${xnatVersion}"
-    implementation "org.nrg:framework:${xnatVersion}"
+    // Use compileOnly for dependencies provided by XNAT at runtime
+    compileOnly "org.nrg.xnat:web:${xnatVersion}"
+    compileOnly "org.nrg.xnat:xnat-data-models:${xnatVersion}"
+    compileOnly "org.nrg:prefs:${xnatVersion}"
+    compileOnly "org.nrg:framework:${xnatVersion}"
 
-    implementation "org.springframework:spring-web:${springVersion}"
-    implementation "org.springframework:spring-webmvc:${springVersion}"
-    implementation "org.springframework:spring-context:${springVersion}"
+    compileOnly "org.springframework:spring-web"
+    compileOnly "org.springframework:spring-webmvc"
+    compileOnly "org.springframework:spring-context"
 
-    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
-    implementation "com.fasterxml.jackson.core:jackson-annotations:${jacksonVersion}"
+    compileOnly "com.fasterxml.jackson.core:jackson-databind"
+    compileOnly "com.fasterxml.jackson.core:jackson-annotations"
 
-    implementation 'org.slf4j:slf4j-api:1.7.36'
-    implementation 'javax.servlet:javax.servlet-api:4.0.1'
-    implementation 'io.swagger:swagger-annotations:1.6.8'
+    compileOnly 'org.slf4j:slf4j-api:1.7.36'
+    compileOnly 'javax.servlet:javax.servlet-api:4.0.1'
+    compileOnly 'io.swagger:swagger-annotations:1.6.8'
 
     compileOnly 'org.projectlombok:lombok:1.18.24'
     annotationProcessor 'org.projectlombok:lombok:1.18.24'
 
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.mockito:mockito-core:4.8.0'
+    testImplementation "org.nrg.xnat:web:${xnatVersion}"
 }
 
 node {
@@ -83,8 +80,15 @@ processResources.dependsOn npmBuild
 jar {
     archiveFileName = "${project.name}-${project.version}.jar"
 
-    into('META-INF/resources') {
+    // Organize static resources properly
+    into('META-INF/resources/scripts/plugin-resources/xnat-filesystem-check-plugin') {
         from file("${projectDir}/src/main/webapp/xnat-filesystem-check/dist")
+        include '*.js', '*.js.map'
+    }
+
+    into('META-INF/resources/styles/plugin-resources/xnat-filesystem-check-plugin') {
+        from file("${projectDir}/src/main/webapp/xnat-filesystem-check/dist")
+        include '*.css', '*.css.map'
     }
 
     manifest {
