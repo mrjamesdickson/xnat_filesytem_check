@@ -2,6 +2,19 @@
 
 A comprehensive XNAT plugin for validating filesystem integrity by checking if files referenced in the XNAT database exist on the filesystem. This plugin ensures data consistency between XNAT's catalog and the physical archive.
 
+## ⚠️ READ-ONLY OPERATION
+
+**This plugin is 100% READ-ONLY and SAFE:**
+- ✅ **Only reads** XNAT database and filesystem
+- ✅ **Only generates reports** - no modifications
+- ✅ **Never deletes, moves, or changes** any files
+- ✅ **Never modifies** the XNAT database
+- ✅ **No automatic repairs** - only validation and reporting
+
+This is a **diagnostic tool only**. Any remediation of found issues must be performed manually by administrators.
+
+---
+
 ## Purpose
 
 **Validates that the XNAT database matches the actual filesystem** by checking:

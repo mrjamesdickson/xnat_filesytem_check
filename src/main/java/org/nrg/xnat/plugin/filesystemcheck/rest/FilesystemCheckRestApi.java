@@ -9,9 +9,15 @@ import org.nrg.xdat.security.helpers.AccessLevel;
 import org.nrg.xdat.security.services.RoleHolder;
 import org.nrg.xdat.security.services.UserManagementServiceI;
 import org.nrg.xft.security.UserI;
-import org.nrg.xnat.plugin.filesystemcheck.models.FilesystemCheckReport;
-import org.nrg.xnat.plugin.filesystemcheck.models.FilesystemCheckRequest;
+import org.nrg.xnat.plugin.filesystemcheck.models.*;
 import org.nrg.xnat.plugin.filesystemcheck.services.FilesystemCheckService;
+import org.nrg.xnat.plugin.filesystemcheck.services.ProgressTrackingService;
+import org.nrg.xapi.exceptions.InternalServerErrorException;
+import org.nrg.xapi.exceptions.NotFoundException;
+import org.nrg.xapi.exceptions.ForbiddenException;
+import org.nrg.xdat.security.helpers.Permissions;
+import org.nrg.xdat.om.XnatProjectdata;
+import org.nrg.xft.event.EventUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -32,14 +38,17 @@ import static org.springframework.web.bind.annotation.RequestMethod.POST;
 public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
     private final FilesystemCheckService filesystemCheckService;
+    private final ProgressTrackingService progressTrackingService;
 
     @Autowired
     public FilesystemCheckRestApi(
             final FilesystemCheckService filesystemCheckService,
+            final ProgressTrackingService progressTrackingService,
             final UserManagementServiceI userManagementService,
             final RoleHolder roleHolder) {
         super(userManagementService, roleHolder);
         this.filesystemCheckService = filesystemCheckService;
+        this.progressTrackingService = progressTrackingService;
     }
 
     @ApiOperation(value = "Perform filesystem check for specified projects or entire archive",
@@ -56,20 +65,33 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
             @ApiParam(value = "Filesystem check request parameters", required = true)
             @RequestBody FilesystemCheckRequest request) {
 
+        final UserI user = getSessionUser();
+        log.info("User {} initiated filesystem check", user.getUsername());
+
+        // Validate project permissions
+        if (request.getProjectIds() != null && !request.getProjectIds().isEmpty()) {
+            for (String projectId : request.getProjectIds()) {
+                if (!Permissions.canRead(user, "xnat:projectData/ID", projectId)) {
+                    throw new ForbiddenException("Insufficient permissions for project: " + projectId);
+                }
+            }
+        }
+
+        // Create audit event
+        EventUtils.newEventInstance(
+                EventUtils.CATEGORY.DATA,
+                EventUtils.TYPE.PROCESS,
+                "Filesystem Check",
+                "User " + user.getUsername() + " initiated filesystem check for " +
+                        (request.getEntireArchive() ? "entire archive" : request.getProjectIds().size() + " project(s)")
+        );
+
         try {
-            UserI user = getSessionUser();
-            log.info("User {} initiated filesystem check", user.getUsername());
-
             FilesystemCheckReport report = filesystemCheckService.performCheck(request, user);
-            return new ResponseEntity<>(report, HttpStatus.OK);
-
+            return ResponseEntity.ok(report);
         } catch (Exception e) {
             log.error("Error performing filesystem check", e);
-            FilesystemCheckReport errorReport = FilesystemCheckReport.builder()
-                    .status("failed")
-                    .message("Error: " + e.getMessage())
-                    .build();
-            return new ResponseEntity<>(errorReport, HttpStatus.INTERNAL_SERVER_ERROR);
+            throw new InternalServerErrorException("Filesystem check failed: " + e.getMessage(), e);
         }
     }
 
@@ -90,29 +112,51 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
             @ApiParam(value = "Optional parameters")
             @RequestBody(required = false) Map<String, Object> params) {
 
+        final UserI user = getSessionUser();
+
+        // Verify project exists and user has access
         try {
-            UserI user = getSessionUser();
-            log.info("User {} initiated filesystem check for project {}", user.getUsername(), projectId);
-
-            FilesystemCheckRequest request = FilesystemCheckRequest.builder()
-                    .projectIds(Collections.singletonList(projectId))
-                    .entireArchive(false)
-                    .maxFiles(params != null && params.containsKey("maxFiles")
-                            ? (Integer) params.get("maxFiles") : null)
-                    .verifyCatalogs(params != null && params.containsKey("verifyCatalogs")
-                            ? (Boolean) params.get("verifyCatalogs") : false)
-                    .build();
-
-            FilesystemCheckReport report = filesystemCheckService.performCheck(request, user);
-            return new ResponseEntity<>(report, HttpStatus.OK);
-
+            XnatProjectdata project = XnatProjectdata.getXnatProjectdatasById(projectId, user, false);
+            if (project == null) {
+                throw new NotFoundException("Project not found: " + projectId);
+            }
         } catch (Exception e) {
-            log.error("Error performing filesystem check for project " + projectId, e);
-            FilesystemCheckReport errorReport = FilesystemCheckReport.builder()
-                    .status("failed")
-                    .message("Error: " + e.getMessage())
-                    .build();
-            return new ResponseEntity<>(errorReport, HttpStatus.INTERNAL_SERVER_ERROR);
+            if (e instanceof NotFoundException) throw (NotFoundException) e;
+            throw new InternalServerErrorException("Error accessing project: " + projectId, e);
+        }
+
+        // Validate permissions
+        if (!Permissions.canRead(user, "xnat:projectData/ID", projectId)) {
+            log.warn("User {} attempted filesystem check on project {} without permissions",
+                    user.getUsername(), projectId);
+            throw new ForbiddenException("Insufficient permissions for project: " + projectId);
+        }
+
+        log.info("User {} initiated filesystem check for project {}", user.getUsername(), projectId);
+
+        // Create audit event
+        EventUtils.newEventInstance(
+                EventUtils.CATEGORY.DATA,
+                EventUtils.TYPE.PROCESS,
+                "Filesystem Check",
+                "User " + user.getUsername() + " ran filesystem check on project " + projectId
+        );
+
+        FilesystemCheckRequest request = FilesystemCheckRequest.builder()
+                .projectIds(Collections.singletonList(projectId))
+                .entireArchive(false)
+                .maxFiles(params != null && params.containsKey("maxFiles")
+                        ? (Integer) params.get("maxFiles") : null)
+                .verifyCatalogs(params != null && params.containsKey("verifyCatalogs")
+                        ? (Boolean) params.get("verifyCatalogs") : false)
+                .build();
+
+        try {
+            FilesystemCheckReport report = filesystemCheckService.performCheck(request, user);
+            return ResponseEntity.ok(report);
+        } catch (Exception e) {
+            log.error("Error performing filesystem check for project {}", projectId, e);
+            throw new InternalServerErrorException("Filesystem check failed for project " + projectId + ": " + e.getMessage(), e);
         }
     }
 
@@ -179,6 +223,85 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
                     .message("Error: " + e.getMessage())
                     .build();
             return new ResponseEntity<>(errorReport, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+}
+
+    @ApiOperation(value = "Get progress of a specific check",
+            notes = "Returns real-time progress for a running or completed check",
+            response = CheckProgress.class)
+    @XapiRequestMapping(value = "/progress/{checkId}", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
+    public ResponseEntity<CheckProgress> getCheckProgress(
+            @ApiParam(value = "Check ID", required = true)
+            @PathVariable("checkId") String checkId) {
+
+        CheckProgress progress = progressTrackingService.getProgress(checkId);
+        if (progress == null) {
+            throw new NotFoundException("Check not found: " + checkId);
+        }
+
+        // Verify user has access to this check
+        UserI user = getSessionUser();
+        if (!progress.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
+            throw new ForbiddenException("You do not have access to this check");
+        }
+
+        return ResponseEntity.ok(progress);
+    }
+
+    @ApiOperation(value = "Get all active filesystem checks",
+            notes = "Returns all currently running checks (admin only)",
+            response = Map.class)
+    @XapiRequestMapping(value = "/progress/active", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = Admin)
+    public ResponseEntity<Map<String, CheckProgress>> getActiveChecks() {
+        return ResponseEntity.ok(progressTrackingService.getActiveChecks());
+    }
+
+    @ApiOperation(value = "Get user's filesystem checks",
+            notes = "Returns all checks (active and completed) for the current user",
+            response = Map.class)
+    @XapiRequestMapping(value = "/progress/mine", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
+    public ResponseEntity<Map<String, CheckProgress>> getMyChecks() {
+        UserI user = getSessionUser();
+        return ResponseEntity.ok(progressTrackingService.getChecksForUser(user.getUsername()));
+    }
+
+    @ApiOperation(value = "Cancel a running check",
+            notes = "Cancels a running filesystem check")
+    @XapiRequestMapping(value = "/progress/{checkId}/cancel", produces = MediaType.APPLICATION_JSON_VALUE, method = POST, restrictTo = AccessLevel.Authenticated)
+    public ResponseEntity<Map<String, String>> cancelCheck(
+            @ApiParam(value = "Check ID", required = true)
+            @PathVariable("checkId") String checkId) {
+
+        CheckProgress progress = progressTrackingService.getProgress(checkId);
+        if (progress == null) {
+            throw new NotFoundException("Check not found: " + checkId);
+        }
+
+        // Verify user has access to cancel this check
+        UserI user = getSessionUser();
+        if (!progress.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
+            throw new ForbiddenException("You do not have permission to cancel this check");
+        }
+
+        if (!"running".equals(progress.getStatus())) {
+            throw new InternalServerErrorException("Check is not running (status: " + progress.getStatus() + ")");
+        }
+
+        progressTrackingService.cancelCheck(checkId);
+
+        Map<String, String> response = new HashMap<>();
+        response.put("status", "cancelled");
+        response.put("message", "Check cancelled successfully");
+
+        return ResponseEntity.ok(response);
+    }
+
+    private boolean isAdmin(UserI user) {
+        try {
+            return Permissions.isAdmin(user);
+        } catch (Exception e) {
+            return false;
         }
     }
 }

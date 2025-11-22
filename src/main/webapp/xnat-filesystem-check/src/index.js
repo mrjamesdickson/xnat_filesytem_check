@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom';
 import FilesystemCheckApp from './components/FilesystemCheckApp';
 import './styles/main.css';
+import './styles/progress.css';
 
 // Initialize the XNAT Filesystem Check plugin
 window.XNATFilesystemCheck = {

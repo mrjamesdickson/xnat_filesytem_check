@@ -3,6 +3,7 @@ import axios from 'axios';
 import ProjectSelector from './ProjectSelector';
 import CheckResults from './CheckResults';
 import CheckOptions from './CheckOptions';
+import ProgressMonitor from './ProgressMonitor';
 
 const FilesystemCheckApp = () => {
   const [projects, setProjects] = useState([]);
@@ -13,6 +14,7 @@ const FilesystemCheckApp = () => {
   const [isChecking, setIsChecking] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState(null);
+  const [showMonitor, setShowMonitor] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -78,9 +80,23 @@ const FilesystemCheckApp = () => {
     <div className="filesystem-check-container">
       <div className="panel panel-default">
         <div className="panel-heading">
-          <h3 className="panel-title">XNAT Filesystem Check</h3>
+          <h3 className="panel-title">
+            XNAT Filesystem Check
+            <button
+              className="btn btn-sm btn-info pull-right"
+              onClick={() => setShowMonitor(!showMonitor)}
+            >
+              <i className="fa fa-tasks"></i> {showMonitor ? 'Hide' : 'Show'} Progress Monitor
+            </button>
+          </h3>
         </div>
         <div className="panel-body">
+          <div className="alert alert-info">
+            <strong><i className="fa fa-info-circle"></i> Read-Only Operation:</strong> This plugin only validates and reports. It never modifies, deletes, or changes any files.
+          </div>
+
+          {showMonitor && <ProgressMonitor />}
+
           <p className="description">
             Validate that files referenced in XNAT exist on the filesystem.
             Check individual projects or scan the entire archive.

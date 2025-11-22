@@ -13,7 +13,7 @@ buildscript {
 plugins {
     id 'java'
     id 'maven-publish'
-    id 'com.github.node-gradle.node' version '3.5.1'
+    id 'com.github.node-gradle.node' version '3.5.1' apply false
 }
 
 group = 'org.nrg.xnat.plugins'
