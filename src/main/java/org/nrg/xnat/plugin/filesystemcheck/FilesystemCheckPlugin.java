@@ -7,11 +7,14 @@ import org.springframework.context.annotation.ComponentScan;
 @XnatPlugin(
         value = "filesystemCheckPlugin",
         name = "XNAT Filesystem Check Plugin",
-        description = "Validates XNAT filesystem integrity"
+        description = "Validates XNAT filesystem integrity",
+        entityPackages = "org.nrg.xnat.plugin.filesystemcheck.entities"
 )
 @ComponentScan({
         "org.nrg.xnat.plugin.filesystemcheck.rest",
-        "org.nrg.xnat.plugin.filesystemcheck.services"
+        "org.nrg.xnat.plugin.filesystemcheck.services",
+        "org.nrg.xnat.plugin.filesystemcheck.repositories",
+        "org.nrg.xnat.plugin.filesystemcheck.config"
 })
 @Slf4j
 public class FilesystemCheckPlugin {

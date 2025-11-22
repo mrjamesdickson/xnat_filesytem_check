@@ -9,9 +9,12 @@ import org.nrg.xdat.security.helpers.AccessLevel;
 import org.nrg.xdat.security.services.RoleHolder;
 import org.nrg.xdat.security.services.UserManagementServiceI;
 import org.nrg.xft.security.UserI;
+import org.nrg.xnat.plugin.filesystemcheck.entities.FileCheckResultEntity;
+import org.nrg.xnat.plugin.filesystemcheck.entities.FilesystemCheckEntity;
 import org.nrg.xnat.plugin.filesystemcheck.models.*;
-import org.nrg.xnat.plugin.filesystemcheck.services.FilesystemCheckService;
-import org.nrg.xnat.plugin.filesystemcheck.services.ProgressTrackingService;
+import org.nrg.xnat.plugin.filesystemcheck.repositories.FileCheckResultDao;
+import org.nrg.xnat.plugin.filesystemcheck.repositories.FilesystemCheckDao;
+import org.nrg.xnat.plugin.filesystemcheck.services.AsyncFilesystemCheckService;
 import org.nrg.xapi.exceptions.InternalServerErrorException;
 import org.nrg.xapi.exceptions.NotFoundException;
 import org.nrg.xapi.exceptions.ForbiddenException;
@@ -24,9 +27,11 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
+import javax.servlet.http.HttpServletResponse;
+import java.io.PrintWriter;
+import java.time.Instant;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import static org.nrg.xdat.security.helpers.AccessLevel.Admin;
 import static org.springframework.web.bind.annotation.RequestMethod.GET;
@@ -37,31 +42,34 @@ import static org.springframework.web.bind.annotation.RequestMethod.POST;
 @Slf4j
 public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
-    private final FilesystemCheckService filesystemCheckService;
-    private final ProgressTrackingService progressTrackingService;
+    private final AsyncFilesystemCheckService asyncFilesystemCheckService;
+    private final FilesystemCheckDao checkDao;
+    private final FileCheckResultDao resultDao;
 
     @Autowired
     public FilesystemCheckRestApi(
-            final FilesystemCheckService filesystemCheckService,
-            final ProgressTrackingService progressTrackingService,
+            final AsyncFilesystemCheckService asyncFilesystemCheckService,
+            final FilesystemCheckDao checkDao,
+            final FileCheckResultDao resultDao,
             final UserManagementServiceI userManagementService,
             final RoleHolder roleHolder) {
         super(userManagementService, roleHolder);
-        this.filesystemCheckService = filesystemCheckService;
-        this.progressTrackingService = progressTrackingService;
+        this.asyncFilesystemCheckService = asyncFilesystemCheckService;
+        this.checkDao = checkDao;
+        this.resultDao = resultDao;
     }
 
-    @ApiOperation(value = "Perform filesystem check for specified projects or entire archive",
-            notes = "Validates that files referenced in XNAT exist on the filesystem",
-            response = FilesystemCheckReport.class)
+    @ApiOperation(value = "Start filesystem check for specified projects or entire archive",
+            notes = "Starts an async filesystem check and returns immediately with a check ID",
+            response = Map.class)
     @ApiResponses({
-            @ApiResponse(code = 200, message = "Check completed successfully"),
-            @ApiResponse(code = 401, message = "Must be authenticated to access the XNAT REST API"),
+            @ApiResponse(code = 200, message = "Check started successfully"),
+            @ApiResponse(code = 401, message = "Must be authenticated"),
             @ApiResponse(code = 403, message = "Insufficient permissions"),
             @ApiResponse(code = 500, message = "Unexpected error")
     })
     @XapiRequestMapping(value = "/check", produces = MediaType.APPLICATION_JSON_VALUE, method = POST, restrictTo = Admin)
-    public ResponseEntity<FilesystemCheckReport> performCheck(
+    public ResponseEntity<Map<String, String>> startCheck(
             @ApiParam(value = "Filesystem check request parameters", required = true)
             @RequestBody FilesystemCheckRequest request) {
 
@@ -77,36 +85,43 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
             }
         }
 
+        // Create check entity
+        String checkId = UUID.randomUUID().toString();
+        FilesystemCheckEntity checkEntity = FilesystemCheckEntity.builder()
+                .checkId(checkId)
+                .username(user.getUsername())
+                .status("queued")
+                .entireArchive(request.getEntireArchive())
+                .projectIds(request.getProjectIds() != null ?
+                        String.join(",", request.getProjectIds()) : null)
+                .maxFiles(request.getMaxFiles())
+                .verifyCatalogs(request.getVerifyCatalogs())
+                .build();
+
+        checkDao.create(checkEntity);
+
         // Create audit event
         EventUtils.newEventInstance(
                 EventUtils.CATEGORY.DATA,
                 EventUtils.TYPE.PROCESS,
                 "Filesystem Check",
-                "User " + user.getUsername() + " initiated filesystem check for " +
-                        (request.getEntireArchive() ? "entire archive" : request.getProjectIds().size() + " project(s)")
+                "User " + user.getUsername() + " started check " + checkId
         );
 
-        try {
-            FilesystemCheckReport report = filesystemCheckService.performCheck(request, user);
-            return ResponseEntity.ok(report);
-        } catch (Exception e) {
-            log.error("Error performing filesystem check", e);
-            throw new InternalServerErrorException("Filesystem check failed: " + e.getMessage(), e);
-        }
+        // Start async check
+        asyncFilesystemCheckService.performCheckAsync(checkId, request, user);
+
+        Map<String, String> response = new HashMap<>();
+        response.put("checkId", checkId);
+        response.put("status", "queued");
+        response.put("message", "Filesystem check started");
+
+        return ResponseEntity.ok(response);
     }
 
-    @ApiOperation(value = "Perform filesystem check for a specific project",
-            notes = "Validates that files referenced in the specified XNAT project exist on the filesystem",
-            response = FilesystemCheckReport.class)
-    @ApiResponses({
-            @ApiResponse(code = 200, message = "Check completed successfully"),
-            @ApiResponse(code = 401, message = "Must be authenticated to access the XNAT REST API"),
-            @ApiResponse(code = 403, message = "Insufficient permissions"),
-            @ApiResponse(code = 404, message = "Project not found"),
-            @ApiResponse(code = 500, message = "Unexpected error")
-    })
+    @ApiOperation(value = "Start filesystem check for a specific project")
     @XapiRequestMapping(value = "/check/project/{projectId}", produces = MediaType.APPLICATION_JSON_VALUE, method = POST, restrictTo = Admin)
-    public ResponseEntity<FilesystemCheckReport> performCheckForProject(
+    public ResponseEntity<Map<String, String>> startCheckForProject(
             @ApiParam(value = "Project ID", required = true)
             @PathVariable("projectId") String projectId,
             @ApiParam(value = "Optional parameters")
@@ -125,22 +140,9 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
             throw new InternalServerErrorException("Error accessing project: " + projectId, e);
         }
 
-        // Validate permissions
         if (!Permissions.canRead(user, "xnat:projectData/ID", projectId)) {
-            log.warn("User {} attempted filesystem check on project {} without permissions",
-                    user.getUsername(), projectId);
             throw new ForbiddenException("Insufficient permissions for project: " + projectId);
         }
-
-        log.info("User {} initiated filesystem check for project {}", user.getUsername(), projectId);
-
-        // Create audit event
-        EventUtils.newEventInstance(
-                EventUtils.CATEGORY.DATA,
-                EventUtils.TYPE.PROCESS,
-                "Filesystem Check",
-                "User " + user.getUsername() + " ran filesystem check on project " + projectId
-        );
 
         FilesystemCheckRequest request = FilesystemCheckRequest.builder()
                 .projectIds(Collections.singletonList(projectId))
@@ -151,150 +153,254 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
                         ? (Boolean) params.get("verifyCatalogs") : false)
                 .build();
 
-        try {
-            FilesystemCheckReport report = filesystemCheckService.performCheck(request, user);
-            return ResponseEntity.ok(report);
-        } catch (Exception e) {
-            log.error("Error performing filesystem check for project {}", projectId, e);
-            throw new InternalServerErrorException("Filesystem check failed for project " + projectId + ": " + e.getMessage(), e);
-        }
+        return startCheck(request);
     }
 
-    @ApiOperation(value = "Get filesystem check status",
-            notes = "Returns the status of filesystem check operations",
-            response = Map.class)
-    @ApiResponses({
-            @ApiResponse(code = 200, message = "Status retrieved successfully"),
-            @ApiResponse(code = 401, message = "Must be authenticated to access the XNAT REST API"),
-            @ApiResponse(code = 500, message = "Unexpected error")
-    })
-    @XapiRequestMapping(value = "/status", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
-    public ResponseEntity<Map<String, Object>> getStatus() {
-        try {
-            Map<String, Object> status = new HashMap<>();
-            status.put("service", "filesystem-check");
-            status.put("status", "available");
-            status.put("version", "1.0.0");
-
-            return new ResponseEntity<>(status, HttpStatus.OK);
-
-        } catch (Exception e) {
-            log.error("Error getting status", e);
-            Map<String, Object> errorStatus = new HashMap<>();
-            errorStatus.put("status", "error");
-            errorStatus.put("message", e.getMessage());
-            return new ResponseEntity<>(errorStatus, HttpStatus.INTERNAL_SERVER_ERROR);
-        }
-    }
-
-    @ApiOperation(value = "Perform filesystem check for entire archive",
-            notes = "Validates that all files referenced in XNAT exist on the filesystem",
-            response = FilesystemCheckReport.class)
-    @ApiResponses({
-            @ApiResponse(code = 200, message = "Check completed successfully"),
-            @ApiResponse(code = 401, message = "Must be authenticated to access the XNAT REST API"),
-            @ApiResponse(code = 403, message = "Insufficient permissions (admin required)"),
-            @ApiResponse(code = 500, message = "Unexpected error")
-    })
+    @ApiOperation(value = "Start filesystem check for entire archive")
     @XapiRequestMapping(value = "/check/archive", produces = MediaType.APPLICATION_JSON_VALUE, method = POST, restrictTo = Admin)
-    public ResponseEntity<FilesystemCheckReport> performCheckForArchive(
+    public ResponseEntity<Map<String, String>> startCheckForArchive(
             @ApiParam(value = "Optional parameters")
             @RequestBody(required = false) Map<String, Object> params) {
 
-        try {
-            UserI user = getSessionUser();
-            log.info("User {} initiated filesystem check for entire archive", user.getUsername());
+        FilesystemCheckRequest request = FilesystemCheckRequest.builder()
+                .entireArchive(true)
+                .maxFiles(params != null && params.containsKey("maxFiles")
+                        ? (Integer) params.get("maxFiles") : null)
+                .verifyCatalogs(params != null && params.containsKey("verifyCatalogs")
+                        ? (Boolean) params.get("verifyCatalogs") : false)
+                .build();
 
-            FilesystemCheckRequest request = FilesystemCheckRequest.builder()
-                    .entireArchive(true)
-                    .maxFiles(params != null && params.containsKey("maxFiles")
-                            ? (Integer) params.get("maxFiles") : null)
-                    .verifyCatalogs(params != null && params.containsKey("verifyCatalogs")
-                            ? (Boolean) params.get("verifyCatalogs") : false)
-                    .build();
-
-            FilesystemCheckReport report = filesystemCheckService.performCheck(request, user);
-            return new ResponseEntity<>(report, HttpStatus.OK);
-
-        } catch (Exception e) {
-            log.error("Error performing filesystem check for archive", e);
-            FilesystemCheckReport errorReport = FilesystemCheckReport.builder()
-                    .status("failed")
-                    .message("Error: " + e.getMessage())
-                    .build();
-            return new ResponseEntity<>(errorReport, HttpStatus.INTERNAL_SERVER_ERROR);
-        }
+        return startCheck(request);
     }
-}
 
-    @ApiOperation(value = "Get progress of a specific check",
-            notes = "Returns real-time progress for a running or completed check",
-            response = CheckProgress.class)
-    @XapiRequestMapping(value = "/progress/{checkId}", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
-    public ResponseEntity<CheckProgress> getCheckProgress(
+    @ApiOperation(value = "Get status of a filesystem check")
+    @XapiRequestMapping(value = "/checks/{checkId}", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
+    public ResponseEntity<FilesystemCheckEntity> getCheckStatus(
             @ApiParam(value = "Check ID", required = true)
             @PathVariable("checkId") String checkId) {
 
-        CheckProgress progress = progressTrackingService.getProgress(checkId);
-        if (progress == null) {
+        FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
+        if (check == null) {
             throw new NotFoundException("Check not found: " + checkId);
         }
 
-        // Verify user has access to this check
+        // Verify user has access
         UserI user = getSessionUser();
-        if (!progress.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
-            throw new ForbiddenException("You do not have access to this check");
+        if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
+            throw new ForbiddenException("Access denied");
         }
 
-        return ResponseEntity.ok(progress);
+        return ResponseEntity.ok(check);
     }
 
-    @ApiOperation(value = "Get all active filesystem checks",
-            notes = "Returns all currently running checks (admin only)",
-            response = Map.class)
-    @XapiRequestMapping(value = "/progress/active", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = Admin)
-    public ResponseEntity<Map<String, CheckProgress>> getActiveChecks() {
-        return ResponseEntity.ok(progressTrackingService.getActiveChecks());
+    @ApiOperation(value = "Get all active checks")
+    @XapiRequestMapping(value = "/checks/active", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = Admin)
+    public ResponseEntity<List<FilesystemCheckEntity>> getActiveChecks() {
+        return ResponseEntity.ok(checkDao.findActiveChecks());
     }
 
-    @ApiOperation(value = "Get user's filesystem checks",
-            notes = "Returns all checks (active and completed) for the current user",
-            response = Map.class)
-    @XapiRequestMapping(value = "/progress/mine", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
-    public ResponseEntity<Map<String, CheckProgress>> getMyChecks() {
+    @ApiOperation(value = "Get user's checks")
+    @XapiRequestMapping(value = "/checks/mine", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
+    public ResponseEntity<List<FilesystemCheckEntity>> getMyChecks() {
         UserI user = getSessionUser();
-        return ResponseEntity.ok(progressTrackingService.getChecksForUser(user.getUsername()));
+        return ResponseEntity.ok(checkDao.findByUsername(user.getUsername()));
     }
 
-    @ApiOperation(value = "Cancel a running check",
-            notes = "Cancels a running filesystem check")
-    @XapiRequestMapping(value = "/progress/{checkId}/cancel", produces = MediaType.APPLICATION_JSON_VALUE, method = POST, restrictTo = AccessLevel.Authenticated)
+    @ApiOperation(value = "Get paginated check results")
+    @XapiRequestMapping(value = "/checks/{checkId}/results", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
+    public ResponseEntity<Map<String, Object>> getCheckResults(
+            @ApiParam(value = "Check ID", required = true)
+            @PathVariable("checkId") String checkId,
+            @ApiParam(value = "Page number (0-indexed)")
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @ApiParam(value = "Page size")
+            @RequestParam(value = "size", defaultValue = "100") int size,
+            @ApiParam(value = "Filter by status (found, missing, unresolved, error)")
+            @RequestParam(value = "status", required = false) String status) {
+
+        // Verify check exists and user has access
+        FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
+        if (check == null) {
+            throw new NotFoundException("Check not found: " + checkId);
+        }
+
+        UserI user = getSessionUser();
+        if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
+            throw new ForbiddenException("Access denied");
+        }
+
+        // Get results with pagination
+        List<FileCheckResultEntity> results;
+        long total;
+
+        if (status != null && !status.isEmpty()) {
+            results = resultDao.findByCheckIdAndStatus(checkId, status, page, size);
+            total = resultDao.countByCheckIdAndStatus(checkId, status);
+        } else {
+            results = resultDao.findByCheckId(checkId, page, size);
+            total = resultDao.countByCheckId(checkId);
+        }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("results", results);
+        response.put("page", page);
+        response.put("size", size);
+        response.put("total", total);
+        response.put("totalPages", (total + size - 1) / size);
+
+        return ResponseEntity.ok(response);
+    }
+
+    @ApiOperation(value = "Export check results as CSV")
+    @XapiRequestMapping(value = "/checks/{checkId}/export/csv", produces = "text/csv", method = GET, restrictTo = AccessLevel.Authenticated)
+    public void exportResultsCSV(
+            @ApiParam(value = "Check ID", required = true)
+            @PathVariable("checkId") String checkId,
+            @ApiParam(value = "Filter by status")
+            @RequestParam(value = "status", required = false) String status,
+            HttpServletResponse response) throws Exception {
+
+        // Verify check exists and user has access
+        FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
+        if (check == null) {
+            throw new NotFoundException("Check not found: " + checkId);
+        }
+
+        UserI user = getSessionUser();
+        if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
+            throw new ForbiddenException("Access denied");
+        }
+
+        response.setContentType("text/csv");
+        response.setHeader("Content-Disposition", "attachment; filename=\"filesystem-check-" + checkId + ".csv\"");
+
+        PrintWriter writer = response.getWriter();
+
+        // Write CSV header
+        writer.println("Project,Session,Resource,Scope,Scan,Assessor,File,Path,Status,Error,Checked At");
+
+        // Stream results in batches
+        int page = 0;
+        int pageSize = 1000;
+        List<FileCheckResultEntity> results;
+
+        do {
+            if (status != null && !status.isEmpty()) {
+                results = resultDao.findByCheckIdAndStatus(checkId, status, page, pageSize);
+            } else {
+                results = resultDao.findByCheckId(checkId, page, pageSize);
+            }
+
+            for (FileCheckResultEntity result : results) {
+                writer.printf("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"%n",
+                        csvEscape(result.getProject()),
+                        csvEscape(result.getSession()),
+                        csvEscape(result.getResource()),
+                        csvEscape(result.getScope()),
+                        csvEscape(result.getScanId()),
+                        csvEscape(result.getAssessorId()),
+                        csvEscape(result.getFileName()),
+                        csvEscape(result.getFilePath()),
+                        csvEscape(result.getStatus()),
+                        csvEscape(result.getErrorMessage()),
+                        result.getCheckedAt() != null ? result.getCheckedAt().toString() : "");
+            }
+
+            page++;
+        } while (results.size() == pageSize);
+
+        writer.flush();
+    }
+
+    @ApiOperation(value = "Get check result summary statistics")
+    @XapiRequestMapping(value = "/checks/{checkId}/summary", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
+    public ResponseEntity<Map<String, Object>> getCheckSummary(
+            @ApiParam(value = "Check ID", required = true)
+            @PathVariable("checkId") String checkId) {
+
+        FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
+        if (check == null) {
+            throw new NotFoundException("Check not found: " + checkId);
+        }
+
+        UserI user = getSessionUser();
+        if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
+            throw new ForbiddenException("Access denied");
+        }
+
+        Map<String, Object> summary = new HashMap<>();
+        summary.put("checkId", check.getCheckId());
+        summary.put("status", check.getStatus());
+        summary.put("username", check.getUsername());
+        summary.put("startedAt", check.getStartedAt());
+        summary.put("completedAt", check.getCompletedAt());
+        summary.put("totalFiles", check.getTotalFiles());
+        summary.put("processedFiles", check.getProcessedFiles());
+        summary.put("filesFound", check.getFilesFound());
+        summary.put("filesMissing", check.getFilesMissing());
+        summary.put("filesUnresolved", check.getFilesUnresolved());
+        summary.put("percentComplete", check.getPercentComplete());
+
+        // Get detailed counts by status
+        Map<String, Long> statusCounts = new HashMap<>();
+        statusCounts.put("found", resultDao.countByCheckIdAndStatus(checkId, "found"));
+        statusCounts.put("missing", resultDao.countByCheckIdAndStatus(checkId, "missing"));
+        statusCounts.put("unresolved", resultDao.countByCheckIdAndStatus(checkId, "unresolved"));
+        statusCounts.put("error", resultDao.countByCheckIdAndStatus(checkId, "error"));
+
+        summary.put("statusCounts", statusCounts);
+
+        return ResponseEntity.ok(summary);
+    }
+
+    @ApiOperation(value = "Cancel a running check")
+    @XapiRequestMapping(value = "/checks/{checkId}/cancel", produces = MediaType.APPLICATION_JSON_VALUE, method = POST, restrictTo = AccessLevel.Authenticated)
     public ResponseEntity<Map<String, String>> cancelCheck(
             @ApiParam(value = "Check ID", required = true)
             @PathVariable("checkId") String checkId) {
 
-        CheckProgress progress = progressTrackingService.getProgress(checkId);
-        if (progress == null) {
+        FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
+        if (check == null) {
             throw new NotFoundException("Check not found: " + checkId);
         }
 
-        // Verify user has access to cancel this check
         UserI user = getSessionUser();
-        if (!progress.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
-            throw new ForbiddenException("You do not have permission to cancel this check");
+        if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
+            throw new ForbiddenException("Access denied");
         }
 
-        if (!"running".equals(progress.getStatus())) {
-            throw new InternalServerErrorException("Check is not running (status: " + progress.getStatus() + ")");
+        if (!"running".equals(check.getStatus()) && !"queued".equals(check.getStatus())) {
+            throw new InternalServerErrorException("Check is not running (status: " + check.getStatus() + ")");
         }
 
-        progressTrackingService.cancelCheck(checkId);
+        asyncFilesystemCheckService.cancelCheck(checkId);
+
+        check.setStatus("cancelled");
+        check.setCompletedAt(Instant.now());
+        checkDao.update(check);
 
         Map<String, String> response = new HashMap<>();
         response.put("status", "cancelled");
         response.put("message", "Check cancelled successfully");
 
         return ResponseEntity.ok(response);
+    }
+
+    @ApiOperation(value = "Get service status")
+    @XapiRequestMapping(value = "/status", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
+    public ResponseEntity<Map<String, Object>> getStatus() {
+        Map<String, Object> status = new HashMap<>();
+        status.put("service", "filesystem-check");
+        status.put("status", "available");
+        status.put("version", "1.0.0");
+        status.put("activeChecks", checkDao.findActiveChecks().size());
+
+        return ResponseEntity.ok(status);
+    }
+
+    private String csvEscape(String value) {
+        if (value == null) return "";
+        return value.replace("\"", "\"\"");
     }
 
     private boolean isAdmin(UserI user) {
