@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import ProjectSelector from './ProjectSelector';
-import CheckResults from './CheckResults';
+import CheckResultsViewer from './CheckResultsViewer';
 import CheckOptions from './CheckOptions';
 import ProgressMonitor from './ProgressMonitor';
 
@@ -11,10 +11,11 @@ const FilesystemCheckApp = () => {
   const [entireArchive, setEntireArchive] = useState(false);
   const [maxFiles, setMaxFiles] = useState(null);
   const [verifyCatalogs, setVerifyCatalogs] = useState(false);
-  const [isChecking, setIsChecking] = useState(false);
-  const [report, setReport] = useState(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [activeCheckId, setActiveCheckId] = useState(null);
   const [error, setError] = useState(null);
   const [showMonitor, setShowMonitor] = useState(false);
+  const [viewingCheckId, setViewingCheckId] = useState(null);
 
   useEffect(() => {
     loadProjects();
@@ -30,10 +31,10 @@ const FilesystemCheckApp = () => {
     }
   };
 
-  const performCheck = async () => {
-    setIsChecking(true);
+  const startCheck = async () => {
+    setIsStarting(true);
     setError(null);
-    setReport(null);
+    setViewingCheckId(null);
 
     try {
       let endpoint;
@@ -53,12 +54,20 @@ const FilesystemCheckApp = () => {
       }
 
       const response = await axios.post(endpoint, requestData);
-      setReport(response.data);
+
+      // New async API returns checkId immediately
+      const checkId = response.data.checkId;
+      setActiveCheckId(checkId);
+      setShowMonitor(true);
+
+      // Show success message
+      setError(null);
+
     } catch (err) {
-      console.error('Error performing check:', err);
-      setError(err.response?.data?.message || 'Failed to perform filesystem check');
+      console.error('Error starting check:', err);
+      setError(err.response?.data?.message || 'Failed to start filesystem check');
     } finally {
-      setIsChecking(false);
+      setIsStarting(false);
     }
   };
 
@@ -76,6 +85,16 @@ const FilesystemCheckApp = () => {
     }
   };
 
+  const handleViewResults = (checkId) => {
+    setViewingCheckId(checkId);
+    setShowMonitor(false);
+  };
+
+  const handleBackToMonitor = () => {
+    setViewingCheckId(null);
+    setShowMonitor(true);
+  };
+
   return (
     <div className="filesystem-check-container">
       <div className="panel panel-default">
@@ -84,7 +103,10 @@ const FilesystemCheckApp = () => {
             XNAT Filesystem Check
             <button
               className="btn btn-sm btn-info pull-right"
-              onClick={() => setShowMonitor(!showMonitor)}
+              onClick={() => {
+                setShowMonitor(!showMonitor);
+                setViewingCheckId(null);
+              }}
             >
               <i className="fa fa-tasks"></i> {showMonitor ? 'Hide' : 'Show'} Progress Monitor
             </button>
@@ -95,55 +117,84 @@ const FilesystemCheckApp = () => {
             <strong><i className="fa fa-info-circle"></i> Read-Only Operation:</strong> This plugin only validates and reports. It never modifies, deletes, or changes any files.
           </div>
 
-          {showMonitor && <ProgressMonitor />}
+          {viewingCheckId ? (
+            <>
+              <button
+                className="btn btn-default btn-sm"
+                onClick={handleBackToMonitor}
+                style={{ marginBottom: '15px' }}
+              >
+                <i className="fa fa-arrow-left"></i> Back to Monitor
+              </button>
+              <CheckResultsViewer checkId={viewingCheckId} />
+            </>
+          ) : showMonitor ? (
+            <ProgressMonitor
+              highlightCheckId={activeCheckId}
+              onViewResults={handleViewResults}
+            />
+          ) : (
+            <>
+              <p className="description">
+                Validate that files referenced in XNAT exist on the filesystem.
+                Check individual projects or scan the entire archive.
+              </p>
 
-          <p className="description">
-            Validate that files referenced in XNAT exist on the filesystem.
-            Check individual projects or scan the entire archive.
-          </p>
+              <ProjectSelector
+                projects={projects}
+                selectedProjects={selectedProjects}
+                onSelectionChange={handleProjectSelection}
+                entireArchive={entireArchive}
+                onEntireArchiveChange={handleEntireArchiveChange}
+                disabled={isStarting}
+              />
 
-          <ProjectSelector
-            projects={projects}
-            selectedProjects={selectedProjects}
-            onSelectionChange={handleProjectSelection}
-            entireArchive={entireArchive}
-            onEntireArchiveChange={handleEntireArchiveChange}
-            disabled={isChecking}
-          />
+              <CheckOptions
+                maxFiles={maxFiles}
+                onMaxFilesChange={setMaxFiles}
+                verifyCatalogs={verifyCatalogs}
+                onVerifyCatalogsChange={setVerifyCatalogs}
+                disabled={isStarting}
+              />
 
-          <CheckOptions
-            maxFiles={maxFiles}
-            onMaxFilesChange={setMaxFiles}
-            verifyCatalogs={verifyCatalogs}
-            onVerifyCatalogsChange={setVerifyCatalogs}
-            disabled={isChecking}
-          />
+              <div className="check-actions">
+                <button
+                  className="btn btn-primary"
+                  onClick={startCheck}
+                  disabled={isStarting || (!entireArchive && selectedProjects.length === 0)}
+                >
+                  {isStarting ? (
+                    <>
+                      <i className="fa fa-spinner fa-spin"></i> Starting Check...
+                    </>
+                  ) : (
+                    <>
+                      <i className="fa fa-check-circle"></i> Start Filesystem Check
+                    </>
+                  )}
+                </button>
+              </div>
 
-          <div className="check-actions">
-            <button
-              className="btn btn-primary"
-              onClick={performCheck}
-              disabled={isChecking || (!entireArchive && selectedProjects.length === 0)}
-            >
-              {isChecking ? (
-                <>
-                  <i className="fa fa-spinner fa-spin"></i> Checking...
-                </>
-              ) : (
-                <>
-                  <i className="fa fa-check-circle"></i> Run Filesystem Check
-                </>
+              {error && (
+                <div className="alert alert-danger" role="alert">
+                  <i className="fa fa-exclamation-triangle"></i> {error}
+                </div>
               )}
-            </button>
-          </div>
 
-          {error && (
-            <div className="alert alert-danger" role="alert">
-              <i className="fa fa-exclamation-triangle"></i> {error}
-            </div>
+              {activeCheckId && !showMonitor && (
+                <div className="alert alert-success" role="alert">
+                  <i className="fa fa-check-circle"></i> Filesystem check started successfully!
+                  Check ID: {activeCheckId.substring(0, 8)}...
+                  <button
+                    className="btn btn-sm btn-info pull-right"
+                    onClick={() => setShowMonitor(true)}
+                  >
+                    View Progress
+                  </button>
+                </div>
+              )}
+            </>
           )}
-
-          {report && <CheckResults report={report} />}
         </div>
       </div>
     </div>

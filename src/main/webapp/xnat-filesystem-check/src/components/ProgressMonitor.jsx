@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import moment from 'moment';
 
-const ProgressMonitor = () => {
-  const [myChecks, setMyChecks] = useState({});
-  const [activeChecks, setActiveChecks] = useState({});
+const ProgressMonitor = ({ highlightCheckId, onViewResults }) => {
+  const [myChecks, setMyChecks] = useState([]);
+  const [activeChecks, setActiveChecks] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [error, setError] = useState(null);
@@ -27,7 +27,7 @@ const ProgressMonitor = () => {
 
   const loadMyChecks = async () => {
     try {
-      const response = await axios.get('/xapi/filesystem-check/progress/mine');
+      const response = await axios.get('/xapi/filesystem-check/checks/mine');
       setMyChecks(response.data);
       setError(null);
     } catch (err) {
@@ -38,7 +38,7 @@ const ProgressMonitor = () => {
 
   const loadActiveChecks = async () => {
     try {
-      const response = await axios.get('/xapi/filesystem-check/progress/active');
+      const response = await axios.get('/xapi/filesystem-check/checks/active');
       setActiveChecks(response.data);
     } catch (err) {
       console.error('Error loading active checks:', err);
@@ -60,7 +60,7 @@ const ProgressMonitor = () => {
     }
 
     try {
-      await axios.post(`/xapi/filesystem-check/progress/${checkId}/cancel`);
+      await axios.post(`/xapi/filesystem-check/checks/${checkId}/cancel`);
       loadMyChecks();
     } catch (err) {
       console.error('Error cancelling check:', err);
@@ -69,11 +69,16 @@ const ProgressMonitor = () => {
   };
 
   const renderProgress = (progress) => {
-    const isRunning = progress.status === 'running';
+    const isRunning = progress.status === 'running' || progress.status === 'queued';
     const percentComplete = progress.percentComplete || 0;
+    const isHighlighted = progress.checkId === highlightCheckId;
 
     return (
-      <div key={progress.checkId} className="progress-item">
+      <div
+        key={progress.checkId}
+        className={`progress-item ${isHighlighted ? 'highlighted' : ''}`}
+        style={isHighlighted ? { border: '2px solid #5bc0de', backgroundColor: '#f0f9ff' } : {}}
+      >
         <div className="progress-header">
           <h5>
             Check ID: {progress.checkId.substring(0, 8)}...
@@ -140,12 +145,23 @@ const ProgressMonitor = () => {
         )}
 
         {progress.status === 'completed' && (
-          <div className="completed-stats">
-            <div>Total Files Checked: <strong>{progress.processedFiles}</strong></div>
-            <div>Files Found: <span className="text-success">{progress.filesFound}</span></div>
-            <div>Files Missing: <span className="text-danger">{progress.filesMissing}</span></div>
-            <div>Files Unresolved: <span className="text-warning">{progress.filesUnresolved}</span></div>
-          </div>
+          <>
+            <div className="completed-stats">
+              <div>Total Files Checked: <strong>{progress.processedFiles}</strong></div>
+              <div>Files Found: <span className="text-success">{progress.filesFound}</span></div>
+              <div>Files Missing: <span className="text-danger">{progress.filesMissing}</span></div>
+              <div>Files Unresolved: <span className="text-warning">{progress.filesUnresolved}</span></div>
+            </div>
+            {onViewResults && (
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={() => onViewResults(progress.checkId)}
+                style={{ marginTop: '10px' }}
+              >
+                <i className="fa fa-eye"></i> View Results
+              </button>
+            )}
+          </>
         )}
       </div>
     );
@@ -178,22 +194,22 @@ const ProgressMonitor = () => {
           )}
 
           <h4>My Checks</h4>
-          {Object.keys(myChecks).length === 0 ? (
+          {myChecks.length === 0 ? (
             <p className="text-muted">No checks in progress or history</p>
           ) : (
             <div className="checks-list">
-              {Object.values(myChecks).sort((a, b) =>
+              {myChecks.sort((a, b) =>
                 new Date(b.startedAt) - new Date(a.startedAt)
               ).map(renderProgress)}
             </div>
           )}
 
-          {isAdmin && Object.keys(activeChecks).length > 0 && (
+          {isAdmin && activeChecks.length > 0 && (
             <>
               <hr />
               <h4>All Active Checks (Admin)</h4>
               <div className="checks-list">
-                {Object.values(activeChecks).sort((a, b) =>
+                {activeChecks.sort((a, b) =>
                   new Date(b.startedAt) - new Date(a.startedAt)
                 ).map(renderProgress)}
               </div>
