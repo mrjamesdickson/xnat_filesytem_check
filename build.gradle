@@ -1,0 +1,110 @@
+/*
+ * XNAT Filesystem Check Plugin
+ * Copyright (c) 2025 XNATWorks.
+ * All rights reserved.
+ *
+ * This software is distributed under the terms described in the LICENSE file.
+ */
+
+plugins {
+    id 'java'
+    id 'maven-publish'
+}
+
+group = 'org.nrg.xnat.plugins'
+version = '1.0.0-SNAPSHOT'
+description = 'XNAT Filesystem Check Plugin'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url 'https://nrgxnat.jfrog.io/nrgxnat/libs-release' }
+    maven { url 'https://nrgxnat.jfrog.io/nrgxnat/libs-snapshot' }
+}
+
+configurations {
+    all {
+        exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+        exclude group: 'log4j', module: 'log4j'
+    }
+}
+
+def xnatVersion = '1.9.0'
+
+dependencies {
+    // XNAT Core dependencies
+    compileOnly "org.nrg.xnat:web:${xnatVersion}"
+    compileOnly "org.nrg.xnat:xnat-data-models:${xnatVersion}"
+    compileOnly "org.nrg:framework:${xnatVersion}"
+    compileOnly "org.nrg:prefs:${xnatVersion}"
+
+    // Spring
+    compileOnly 'org.springframework:spring-web:5.3.27'
+    compileOnly 'org.springframework:spring-webmvc:5.3.27'
+    compileOnly 'org.springframework:spring-context:5.3.27'
+    compileOnly 'org.springframework:spring-tx:5.3.27'
+
+    // Hibernate
+    compileOnly 'org.hibernate:hibernate-core:5.6.15.Final'
+
+    // Servlet API
+    compileOnly 'javax.servlet:javax.servlet-api:4.0.1'
+
+    // javax.annotation (needed for Java 9+)
+    compileOnly 'javax.annotation:javax.annotation-api:1.3.2'
+
+    // Swagger
+    compileOnly 'io.swagger:swagger-annotations:1.6.9'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok:1.18.26'
+    annotationProcessor 'org.projectlombok:lombok:1.18.26'
+
+    // JSON
+    compileOnly 'com.fasterxml.jackson.core:jackson-databind:2.14.2'
+    compileOnly 'com.fasterxml.jackson.core:jackson-annotations:2.14.2'
+
+    // SLF4J
+    compileOnly 'org.slf4j:slf4j-api:1.7.36'
+
+    // Testing
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.mockito:mockito-core:4.11.0'
+    testImplementation 'org.springframework:spring-test:5.3.27'
+    testImplementation "org.nrg:framework:${xnatVersion}"
+    testImplementation 'org.hibernate:hibernate-core:5.6.15.Final'
+    testImplementation 'org.assertj:assertj-core:3.23.1'
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.14.2'
+    testRuntimeOnly 'org.slf4j:slf4j-simple:1.7.36'
+}
+
+jar {
+    archiveFileName = "${project.name}-${project.version}.jar"
+
+    manifest {
+        attributes(
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version,
+            'Build-Date': new Date().format('yyyy-MM-dd HH:mm:ss'),
+            'XNAT-Plugin-Class': 'org.nrg.xnat.plugin.filesystemcheck.FilesystemCheckPlugin'
+        )
+    }
+}
+
+task copyJarToDocker(type: Copy, dependsOn: jar) {
+    from jar.archiveFile
+    into "${projectDir}/docker"
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+}

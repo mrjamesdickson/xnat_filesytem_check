@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>XNAT Filesystem Check</title>
+    <link rel="stylesheet" type="text/css" href="$content.getURI('style/xnat-filesystem-check.css')"/>
+</head>
+<body>
+    <div class="page-wrapper">
+        <div class="page-header">
+            <h1>Filesystem Integrity Check</h1>
+        </div>
+        <div id="filesystem-check-app"></div>
+    </div>
+
+    <script src="$content.getURI('scripts/xnat-filesystem-check.js')"></script>
+    <script>
+        (function() {
+            if (window.XNATFilesystemCheck) {
+                XNATFilesystemCheck.init('filesystem-check-app');
+            }
+        })();
+    </script>
+</body>
+</html>

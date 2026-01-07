@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+XNAT Filesystem Check Plugin
+Copyright (c) 2025 XNATWorks.
+All rights reserved.
+
+This software is distributed under the terms described in the LICENSE file.
+
 Traverse XNAT projects and sessions to verify that referenced files exist on disk.
 
 The script authenticates against an XNAT server, walks projects -> sessions
@@ -353,6 +359,7 @@ class XNATClient:
 @dataclass
 class CheckReport:
     stats: Dict[str, int] = field(default_factory=dict)
+    project_summaries: Dict[str, Dict[str, int]] = field(default_factory=dict)
     missing_files: List[Dict[str, str]] = field(default_factory=list)
     unresolved_files: List[Dict[str, str]] = field(default_factory=list)
     resource_details: List[Dict[str, Any]] = field(default_factory=list)
@@ -364,6 +371,7 @@ class CheckReport:
         return {
             "generated_at": self.generated_at.isoformat(),
             "stats": dict(self.stats),
+            "project_summaries": dict(self.project_summaries),
             "missing_files": list(self.missing_files),
             "unresolved_files": list(self.unresolved_files),
             "resource_details": list(self.resource_details),
@@ -391,6 +399,19 @@ class CheckReport:
                 "Missing catalog entries: {catalog_entries_missing} | Catalog errors: {catalogs_with_errors}"
             ).format(**self.stats),
         ]
+
+        if self.project_summaries:
+            lines.append("")
+            lines.append("Per-Project Summary:")
+            lines.append("-" * 80)
+            for project, pstats in sorted(self.project_summaries.items()):
+                lines.append(
+                    f"  {project}: sessions={pstats.get('sessions', 0)} "
+                    f"files={pstats.get('files_total', 0)} "
+                    f"found={pstats.get('files_found', 0)} "
+                    f"missing={pstats.get('files_missing', 0)} "
+                    f"unresolved={pstats.get('files_unresolved', 0)}"
+                )
 
         if self.missing_files:
             lines.append("Missing files:")
@@ -674,12 +695,61 @@ class CheckReport:
                 "</div>"
                 for title, fields in stat_sections
             )
+            + self._render_project_summary_section(render_table)
             + missing_section
             + unresolved_section
             + resource_section
             + catalog_missing_section
             + catalog_error_section
             + "</body></html>"
+        )
+
+    def _render_project_summary_section(self, render_table) -> str:
+        if not self.project_summaries:
+            return ""
+        # Convert to list of dicts for the table renderer
+        project_rows = [
+            {
+                "project": project,
+                "sessions": pstats.get("sessions", 0),
+                "scans": pstats.get("scans", 0),
+                "assessors": pstats.get("assessors", 0),
+                "resources": pstats.get("resources", 0),
+                "files_total": pstats.get("files_total", 0),
+                "files_found": pstats.get("files_found", 0),
+                "files_missing": pstats.get("files_missing", 0),
+                "files_unresolved": pstats.get("files_unresolved", 0),
+            }
+            for project, pstats in sorted(self.project_summaries.items())
+        ]
+
+        def row_class(entry):
+            if entry.get("files_missing", 0) > 0:
+                return "status-error"
+            if entry.get("files_unresolved", 0) > 0:
+                return "status-warning"
+            return "status-ok"
+
+        return (
+            "<div class=\"section\">"
+            "<h2>Per-Project Summary</h2>"
+            + render_table(
+                project_rows,
+                [
+                    ("project", "Project"),
+                    ("sessions", "Sessions", "number"),
+                    ("scans", "Scans", "number"),
+                    ("assessors", "Assessors", "number"),
+                    ("resources", "Resources", "number"),
+                    ("files_total", "Files Checked", "number"),
+                    ("files_found", "Files Found", "number"),
+                    ("files_missing", "Files Missing", "number"),
+                    ("files_unresolved", "Unresolved", "number"),
+                ],
+                row_class=row_class,
+                table_class="detail sortable",
+            )
+            + "</div>"
         )
 
     @staticmethod
@@ -785,6 +855,19 @@ class FilesystemChecker:
                 stats["projects"] += 1
                 LOG.info("Project: %s", project_label)
 
+                # Initialize per-project stats
+                project_stats = {
+                    "sessions": 0,
+                    "scans": 0,
+                    "assessors": 0,
+                    "resources": 0,
+                    "files_total": 0,
+                    "files_found": 0,
+                    "files_missing": 0,
+                    "files_unresolved": 0,
+                }
+                report.project_summaries[project_label] = project_stats
+
                 try:
                     experiments = list(self.client.iter_project_experiments(project_row))
                 except requests.RequestException as exc:
@@ -794,6 +877,7 @@ class FilesystemChecker:
                 for experiment_row in experiments:
                     session_label = self._experiment_label(experiment_row)
                     stats["sessions"] += 1
+                    project_stats["sessions"] += 1
                     LOG.debug("  Session: %s", session_label)
 
                     try:
@@ -816,6 +900,7 @@ class FilesystemChecker:
                             project_label=project_label,
                             session_label=session_label,
                             scope="session",
+                            project_stats=project_stats,
                         ):
                             if self.verify_catalogs:
                                 self._verify_catalog_paths(report, catalog_paths)
@@ -835,6 +920,7 @@ class FilesystemChecker:
                     for scan_row in scans:
                         scan_label = self._scan_label(scan_row)
                         stats["scans"] += 1
+                        project_stats["scans"] += 1
                         LOG.debug("    Scan: %s", scan_label)
 
                         try:
@@ -861,6 +947,7 @@ class FilesystemChecker:
                                 session_label=session_label,
                                 scope="scan",
                                 scan_id=scan_label,
+                                project_stats=project_stats,
                             ):
                                 if self.verify_catalogs:
                                     self._verify_catalog_paths(report, catalog_paths)
@@ -880,6 +967,7 @@ class FilesystemChecker:
                     for assessor_row in assessors:
                         assessor_label = self._assessor_label(assessor_row)
                         stats["assessors"] += 1
+                        project_stats["assessors"] += 1
                         LOG.debug("    Assessor: %s", assessor_label)
 
                         try:
@@ -906,6 +994,7 @@ class FilesystemChecker:
                                 session_label=session_label,
                                 scope="assessor",
                                 assessor_id=assessor_label,
+                                project_stats=project_stats,
                             ):
                                 if self.verify_catalogs:
                                     self._verify_catalog_paths(report, catalog_paths)
@@ -988,9 +1077,12 @@ class FilesystemChecker:
         scope: str,
         scan_id: Optional[str] = None,
         assessor_id: Optional[str] = None,
+        project_stats: Optional[Dict[str, int]] = None,
     ) -> bool:
         resource_label = self._resource_label(resource_row)
         stats["resources"] += 1
+        if project_stats is not None:
+            project_stats["resources"] += 1
         if scope == "session":
             stats["session_resources"] += 1
         elif scope == "scan":
@@ -1077,11 +1169,15 @@ class FilesystemChecker:
                 return True
 
             stats["files_total"] += 1
+            if project_stats is not None:
+                project_stats["files_total"] += 1
             file_label = self._file_label(file_row)
             resolved_path = self._resolve_path(file_row, base_dir)
 
             if resolved_path is None:
                 stats["files_unresolved"] += 1
+                if project_stats is not None:
+                    project_stats["files_unresolved"] += 1
                 LOG.warning(
                     "      Unresolved path: %s/%s/%s (%s scope) -> %s",
                     project_label,
@@ -1110,6 +1206,8 @@ class FilesystemChecker:
                 path_exists = resolved_path.exists()
             except OSError as exc:
                 stats["files_unresolved"] += 1
+                if project_stats is not None:
+                    project_stats["files_unresolved"] += 1
                 LOG.error(
                     "      Access error: %s/%s/%s (%s scope) -> %s (%s)",
                     project_label,
@@ -1157,6 +1255,8 @@ class FilesystemChecker:
 
             if path_exists:
                 stats["files_found"] += 1
+                if project_stats is not None:
+                    project_stats["files_found"] += 1
                 LOG.debug(
                     "      OK: %s/%s/%s (%s scope) -> %s",
                     project_label,
@@ -1167,6 +1267,8 @@ class FilesystemChecker:
                 )
             else:
                 stats["files_missing"] += 1
+                if project_stats is not None:
+                    project_stats["files_missing"] += 1
                 LOG.error(
                     "      Missing: %s/%s/%s (%s scope) -> %s",
                     project_label,

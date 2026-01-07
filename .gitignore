@@ -1,7 +1,58 @@
+# Gradle
+.gradle/
+build/
+!gradle-wrapper.jar
+.gradletasknamecache
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+yarn.lock
+
+# React build
+src/main/webapp/xnat-filesystem-check/dist/
+src/main/webapp/xnat-filesystem-check/.cache/
+
+# Python
 __pycache__/
-*_report.json
-*_report.html
-*_resources.csv
-prostate_report.*
-xnat_upenn_report.*
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv
+
+# Reports (from script runs)
+*.html
+*.json
+*.csv
+!example_reports/
+
+# OS
+.DS_Store
+Thumbs.db
+*~
+
+# Logs
+*.log

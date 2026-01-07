@@ -1,0 +1,11 @@
+spawner:
+  name: filesystem-check
+  label: Filesystem Check
+  description: Validate XNAT filesystem integrity
+  version: 1.0.0
+  contexts:
+    - site-admin
+  panel:
+    label: Filesystem Check
+    kind: panel.react
+    contentId: filesystem-check-app
