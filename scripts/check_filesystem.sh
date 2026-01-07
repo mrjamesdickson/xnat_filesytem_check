@@ -186,6 +186,7 @@ CMD+=(
     --report "json:${REPORT_PREFIX}.json"
     --report "html:${REPORT_PREFIX}.html"
     --resource-report-file "${REPORT_PREFIX}_resources.csv"
+    --resource-report-format csv
 )
 
 # Show what we're doing
