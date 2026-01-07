@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+XNAT Filesystem Check Plugin
+Copyright (c) 2025 XNATWorks.
+All rights reserved.
+
+This software is distributed under the terms described in the LICENSE file.
+
 Traverse XNAT projects and sessions to verify that referenced files exist on disk.
 
 The script authenticates against an XNAT server, walks projects -> sessions

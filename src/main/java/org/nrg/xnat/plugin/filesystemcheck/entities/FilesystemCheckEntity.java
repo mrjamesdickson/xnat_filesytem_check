@@ -1,3 +1,10 @@
+/*
+ * XNAT Filesystem Check Plugin
+ * Copyright (c) 2025 XNATWorks.
+ * All rights reserved.
+ *
+ * This software is distributed under the terms described in the LICENSE file.
+ */
 package org.nrg.xnat.plugin.filesystemcheck.entities;
 
 import lombok.AllArgsConstructor;
@@ -10,8 +17,8 @@ import org.hibernate.annotations.CacheConcurrencyStrategy;
 import javax.persistence.*;
 import java.time.Instant;
 
-@Entity
-@Table(name = "xhbm_fs_check")
+@Entity(name = "FsCheckFilesystemCheck")
+@Table(name = "xhbm_fscheck_check")
 @Data
 @Builder
 @NoArgsConstructor

@@ -1,113 +1,90 @@
-buildscript {
-    ext {
-        xnatVersion = '1.8.11'
-    }
-    repositories {
-        mavenCentral()
-        maven {
-            url 'https://nrgxnat.jfrog.io/nrgxnat/libs-release'
-        }
-    }
-}
+/*
+ * XNAT Filesystem Check Plugin
+ * Copyright (c) 2025 XNATWorks.
+ * All rights reserved.
+ *
+ * This software is distributed under the terms described in the LICENSE file.
+ */
 
 plugins {
     id 'java'
     id 'maven-publish'
-    id 'com.github.node-gradle.node' version '3.5.1' apply false
 }
 
 group = 'org.nrg.xnat.plugins'
 version = '1.0.0-SNAPSHOT'
 description = 'XNAT Filesystem Check Plugin'
 
-sourceCompatibility = 11
-targetCompatibility = 11
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
 
 repositories {
+    mavenLocal()
     mavenCentral()
-    maven {
-        url 'https://nrgxnat.jfrog.io/nrgxnat/libs-release'
-    }
-    maven {
-        url 'https://nrgxnat.jfrog.io/nrgxnat/ext-release'
+    maven { url 'https://nrgxnat.jfrog.io/nrgxnat/libs-release' }
+    maven { url 'https://nrgxnat.jfrog.io/nrgxnat/libs-snapshot' }
+}
+
+configurations {
+    all {
+        exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+        exclude group: 'log4j', module: 'log4j'
     }
 }
 
+def xnatVersion = '1.9.0'
+
 dependencies {
-    // Use compileOnly for dependencies provided by XNAT at runtime
+    // XNAT Core dependencies
     compileOnly "org.nrg.xnat:web:${xnatVersion}"
     compileOnly "org.nrg.xnat:xnat-data-models:${xnatVersion}"
-    compileOnly "org.nrg:prefs:${xnatVersion}"
     compileOnly "org.nrg:framework:${xnatVersion}"
+    compileOnly "org.nrg:prefs:${xnatVersion}"
 
-    compileOnly "org.springframework:spring-web"
-    compileOnly "org.springframework:spring-webmvc"
-    compileOnly "org.springframework:spring-context"
+    // Spring
+    compileOnly 'org.springframework:spring-web:5.3.27'
+    compileOnly 'org.springframework:spring-webmvc:5.3.27'
+    compileOnly 'org.springframework:spring-context:5.3.27'
+    compileOnly 'org.springframework:spring-tx:5.3.27'
 
-    compileOnly "com.fasterxml.jackson.core:jackson-databind"
-    compileOnly "com.fasterxml.jackson.core:jackson-annotations"
+    // Hibernate
+    compileOnly 'org.hibernate:hibernate-core:5.6.15.Final'
 
-    compileOnly 'org.slf4j:slf4j-api:1.7.36'
+    // Servlet API
     compileOnly 'javax.servlet:javax.servlet-api:4.0.1'
-    compileOnly 'io.swagger:swagger-annotations:1.6.8'
 
-    compileOnly 'org.projectlombok:lombok:1.18.24'
-    annotationProcessor 'org.projectlombok:lombok:1.18.24'
+    // javax.annotation (needed for Java 9+)
+    compileOnly 'javax.annotation:javax.annotation-api:1.3.2'
 
-    // Test dependencies
+    // Swagger
+    compileOnly 'io.swagger:swagger-annotations:1.6.9'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok:1.18.26'
+    annotationProcessor 'org.projectlombok:lombok:1.18.26'
+
+    // JSON
+    compileOnly 'com.fasterxml.jackson.core:jackson-databind:2.14.2'
+    compileOnly 'com.fasterxml.jackson.core:jackson-annotations:2.14.2'
+
+    // SLF4J
+    compileOnly 'org.slf4j:slf4j-api:1.7.36'
+
+    // Testing
     testImplementation 'junit:junit:4.13.2'
-    testImplementation 'org.mockito:mockito-core:4.8.0'
-    testImplementation 'org.mockito:mockito-inline:4.8.0'
-    testImplementation "org.nrg.xnat:web:${xnatVersion}"
-    testImplementation "org.nrg.xnat:xnat-data-models:${xnatVersion}"
+    testImplementation 'org.mockito:mockito-core:4.11.0'
+    testImplementation 'org.springframework:spring-test:5.3.27'
     testImplementation "org.nrg:framework:${xnatVersion}"
-
-    testImplementation 'org.springframework:spring-test:5.3.23'
-    testImplementation 'org.springframework.boot:spring-boot-starter-test:2.7.5'
-    testImplementation 'com.h2database:h2:2.1.214'
-    testImplementation 'org.hibernate:hibernate-core:5.6.11.Final'
-
-    testImplementation 'org.seleniumhq.selenium:selenium-java:4.8.0'
-    testImplementation 'org.seleniumhq.selenium:selenium-chrome-driver:4.8.0'
-    testImplementation 'io.github.bonigarcia:webdrivermanager:5.3.2'
-
+    testImplementation 'org.hibernate:hibernate-core:5.6.15.Final'
     testImplementation 'org.assertj:assertj-core:3.23.1'
-    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.14.0'
-
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.14.2'
     testRuntimeOnly 'org.slf4j:slf4j-simple:1.7.36'
 }
 
-node {
-    version = '16.18.0'
-    download = true
-    nodeProjectDir = file("${projectDir}/src/main/webapp/xnat-filesystem-check")
-}
-
-task npmInstall(type: com.github.gradle.node.npm.task.NpmTask) {
-    args = ['install']
-    workingDir = file("${projectDir}/src/main/webapp/xnat-filesystem-check")
-}
-
-task npmBuild(type: com.github.gradle.node.npm.task.NpmTask, dependsOn: npmInstall) {
-    args = ['run', 'build']
-    workingDir = file("${projectDir}/src/main/webapp/xnat-filesystem-check")
-}
-
-processResources.dependsOn npmBuild
-
 jar {
     archiveFileName = "${project.name}-${project.version}.jar"
-
-    // Organize static resources properly
-    into('META-INF/resources/scripts/plugin-resources/xnat-filesystem-check-plugin') {
-        from file("${projectDir}/src/main/webapp/xnat-filesystem-check/dist")
-        include '*.js', '*.js.map'
-    }
-
-    into('META-INF/resources/styles/plugin-resources/xnat-filesystem-check-plugin') {
-        from file("${projectDir}/src/main/webapp/xnat-filesystem-check/dist")
-        include '*.css', '*.css.map'
-    }
 
     manifest {
         attributes(

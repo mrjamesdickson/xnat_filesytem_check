@@ -1,3 +1,10 @@
+/*
+ * XNAT Filesystem Check Plugin
+ * Copyright (c) 2025 XNATWorks.
+ * All rights reserved.
+ *
+ * This software is distributed under the terms described in the LICENSE file.
+ */
 package org.nrg.xnat.plugin.filesystemcheck.models;
 
 import com.fasterxml.jackson.annotation.JsonFormat;

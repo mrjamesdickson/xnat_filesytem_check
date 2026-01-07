@@ -1,3 +1,10 @@
+/*
+ * XNAT Filesystem Check Plugin
+ * Copyright (c) 2025 XNATWorks.
+ * All rights reserved.
+ *
+ * This software is distributed under the terms described in the LICENSE file.
+ */
 package org.nrg.xnat.plugin.filesystemcheck.entities;
 
 import lombok.AllArgsConstructor;
@@ -10,11 +17,11 @@ import org.hibernate.annotations.CacheConcurrencyStrategy;
 import javax.persistence.*;
 import java.time.Instant;
 
-@Entity
-@Table(name = "xhbm_fs_check_file_result", indexes = {
-    @Index(name = "idx_fs_check_id", columnList = "checkId"),
-    @Index(name = "idx_fs_status", columnList = "status"),
-    @Index(name = "idx_fs_project", columnList = "project")
+@Entity(name = "FsCheckFileResult")
+@Table(name = "xhbm_fscheck_file_result", indexes = {
+    @Index(name = "idx_fscheck_check_id", columnList = "checkId"),
+    @Index(name = "idx_fscheck_status", columnList = "status"),
+    @Index(name = "idx_fscheck_project", columnList = "project")
 })
 @Data
 @Builder

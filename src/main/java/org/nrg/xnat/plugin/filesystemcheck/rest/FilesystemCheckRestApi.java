@@ -1,3 +1,10 @@
+/*
+ * XNAT Filesystem Check Plugin
+ * Copyright (c) 2025 XNATWorks.
+ * All rights reserved.
+ *
+ * This software is distributed under the terms described in the LICENSE file.
+ */
 package org.nrg.xnat.plugin.filesystemcheck.rest;
 
 import io.swagger.annotations.*;
@@ -15,12 +22,11 @@ import org.nrg.xnat.plugin.filesystemcheck.models.*;
 import org.nrg.xnat.plugin.filesystemcheck.repositories.FileCheckResultDao;
 import org.nrg.xnat.plugin.filesystemcheck.repositories.FilesystemCheckDao;
 import org.nrg.xnat.plugin.filesystemcheck.services.AsyncFilesystemCheckService;
-import org.nrg.xapi.exceptions.InternalServerErrorException;
 import org.nrg.xapi.exceptions.NotFoundException;
-import org.nrg.xapi.exceptions.ForbiddenException;
 import org.nrg.xdat.security.helpers.Permissions;
+import org.nrg.xdat.security.helpers.Roles;
+import org.springframework.security.access.AccessDeniedException;
 import org.nrg.xdat.om.XnatProjectdata;
-import org.nrg.xft.event.EventUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -39,6 +45,7 @@ import static org.springframework.web.bind.annotation.RequestMethod.POST;
 
 @Api("XNAT Filesystem Check API")
 @XapiRestController
+@RequestMapping("/filesystem-check")
 @Slf4j
 public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
@@ -79,8 +86,14 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
         // Validate project permissions
         if (request.getProjectIds() != null && !request.getProjectIds().isEmpty()) {
             for (String projectId : request.getProjectIds()) {
-                if (!Permissions.canRead(user, "xnat:projectData/ID", projectId)) {
-                    throw new ForbiddenException("Insufficient permissions for project: " + projectId);
+                try {
+                    if (!Permissions.canRead(user, "xnat:projectData/ID", projectId)) {
+                        throw new AccessDeniedException("Insufficient permissions for project: " + projectId);
+                    }
+                } catch (Exception e) {
+                    if (e instanceof AccessDeniedException) throw (AccessDeniedException) e;
+                    log.error("Error checking permissions for project {}: {}", projectId, e.getMessage());
+                    throw new AccessDeniedException("Error checking permissions for project: " + projectId);
                 }
             }
         }
@@ -100,13 +113,8 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
         checkDao.create(checkEntity);
 
-        // Create audit event
-        EventUtils.newEventInstance(
-                EventUtils.CATEGORY.DATA,
-                EventUtils.TYPE.PROCESS,
-                "Filesystem Check",
-                "User " + user.getUsername() + " started check " + checkId
-        );
+        // Log the filesystem check start
+        log.info("User {} started filesystem check {}", user.getUsername(), checkId);
 
         // Start async check
         asyncFilesystemCheckService.performCheckAsync(checkId, request, user);
@@ -125,7 +133,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
             @ApiParam(value = "Project ID", required = true)
             @PathVariable("projectId") String projectId,
             @ApiParam(value = "Optional parameters")
-            @RequestBody(required = false) Map<String, Object> params) {
+            @RequestBody(required = false) Map<String, Object> params) throws NotFoundException {
 
         final UserI user = getSessionUser();
 
@@ -137,11 +145,17 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
             }
         } catch (Exception e) {
             if (e instanceof NotFoundException) throw (NotFoundException) e;
-            throw new InternalServerErrorException("Error accessing project: " + projectId, e);
+            throw new RuntimeException("Error accessing project: " + projectId, e);
         }
 
-        if (!Permissions.canRead(user, "xnat:projectData/ID", projectId)) {
-            throw new ForbiddenException("Insufficient permissions for project: " + projectId);
+        try {
+            if (!Permissions.canRead(user, "xnat:projectData/ID", projectId)) {
+                throw new AccessDeniedException("Insufficient permissions for project: " + projectId);
+            }
+        } catch (Exception e) {
+            if (e instanceof AccessDeniedException) throw (AccessDeniedException) e;
+            log.error("Error checking permissions for project {}: {}", projectId, e.getMessage());
+            throw new AccessDeniedException("Error checking permissions for project: " + projectId);
         }
 
         FilesystemCheckRequest request = FilesystemCheckRequest.builder()
@@ -177,7 +191,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
     @XapiRequestMapping(value = "/checks/{checkId}", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
     public ResponseEntity<FilesystemCheckEntity> getCheckStatus(
             @ApiParam(value = "Check ID", required = true)
-            @PathVariable("checkId") String checkId) {
+            @PathVariable("checkId") String checkId) throws NotFoundException {
 
         FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
         if (check == null) {
@@ -187,7 +201,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
         // Verify user has access
         UserI user = getSessionUser();
         if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
-            throw new ForbiddenException("Access denied");
+            throw new AccessDeniedException("Access denied");
         }
 
         return ResponseEntity.ok(check);
@@ -216,7 +230,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
             @ApiParam(value = "Page size")
             @RequestParam(value = "size", defaultValue = "100") int size,
             @ApiParam(value = "Filter by status (found, missing, unresolved, error)")
-            @RequestParam(value = "status", required = false) String status) {
+            @RequestParam(value = "status", required = false) String status) throws NotFoundException {
 
         // Verify check exists and user has access
         FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
@@ -226,7 +240,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
         UserI user = getSessionUser();
         if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
-            throw new ForbiddenException("Access denied");
+            throw new AccessDeniedException("Access denied");
         }
 
         // Get results with pagination
@@ -268,7 +282,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
         UserI user = getSessionUser();
         if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
-            throw new ForbiddenException("Access denied");
+            throw new AccessDeniedException("Access denied");
         }
 
         response.setContentType("text/csv");
@@ -316,7 +330,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
     @XapiRequestMapping(value = "/checks/{checkId}/summary", produces = MediaType.APPLICATION_JSON_VALUE, method = GET, restrictTo = AccessLevel.Authenticated)
     public ResponseEntity<Map<String, Object>> getCheckSummary(
             @ApiParam(value = "Check ID", required = true)
-            @PathVariable("checkId") String checkId) {
+            @PathVariable("checkId") String checkId) throws NotFoundException {
 
         FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
         if (check == null) {
@@ -325,7 +339,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
         UserI user = getSessionUser();
         if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
-            throw new ForbiddenException("Access denied");
+            throw new AccessDeniedException("Access denied");
         }
 
         Map<String, Object> summary = new HashMap<>();
@@ -357,7 +371,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
     @XapiRequestMapping(value = "/checks/{checkId}/cancel", produces = MediaType.APPLICATION_JSON_VALUE, method = POST, restrictTo = AccessLevel.Authenticated)
     public ResponseEntity<Map<String, String>> cancelCheck(
             @ApiParam(value = "Check ID", required = true)
-            @PathVariable("checkId") String checkId) {
+            @PathVariable("checkId") String checkId) throws NotFoundException {
 
         FilesystemCheckEntity check = checkDao.findByCheckId(checkId);
         if (check == null) {
@@ -366,11 +380,11 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
         UserI user = getSessionUser();
         if (!check.getUsername().equals(user.getUsername()) && !isAdmin(user)) {
-            throw new ForbiddenException("Access denied");
+            throw new AccessDeniedException("Access denied");
         }
 
         if (!"running".equals(check.getStatus()) && !"queued".equals(check.getStatus())) {
-            throw new InternalServerErrorException("Check is not running (status: " + check.getStatus() + ")");
+            throw new IllegalStateException("Check is not running (status: " + check.getStatus() + ")");
         }
 
         asyncFilesystemCheckService.cancelCheck(checkId);
@@ -405,7 +419,7 @@ public class FilesystemCheckRestApi extends AbstractXapiRestController {
 
     private boolean isAdmin(UserI user) {
         try {
-            return Permissions.isAdmin(user);
+            return Roles.isSiteAdmin(user);
         } catch (Exception e) {
             return false;
         }

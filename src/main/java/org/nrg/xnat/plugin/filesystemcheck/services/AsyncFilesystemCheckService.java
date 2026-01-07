@@ -1,6 +1,19 @@
+/*
+ * XNAT Filesystem Check Plugin
+ * Copyright (c) 2025 XNATWorks.
+ * All rights reserved.
+ *
+ * This software is distributed under the terms described in the LICENSE file.
+ */
 package org.nrg.xnat.plugin.filesystemcheck.services;
 
 import lombok.extern.slf4j.Slf4j;
+import org.nrg.xdat.bean.CatCatalogBean;
+import org.nrg.xdat.bean.CatEntryBean;
+import org.nrg.xdat.model.XnatAbstractresourceI;
+import org.nrg.xdat.model.XnatExperimentdataI;
+import org.nrg.xdat.model.XnatImageassessordataI;
+import org.nrg.xdat.model.XnatImagescandataI;
 import org.nrg.xdat.om.*;
 import org.nrg.xdat.security.helpers.Permissions;
 import org.nrg.xft.event.EventUtils;
@@ -27,7 +40,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 @Slf4j
-@Service
+@Service("fsCheckAsyncService")
 public class AsyncFilesystemCheckService {
 
     @Autowired
@@ -153,17 +166,22 @@ public class AsyncFilesystemCheckService {
         String projectId = project.getId();
         String archivePath = project.getRootArchivePath();
 
-        ArrayList<XnatExperimentdata> sessions = project.getExperiments_experiment();
+        List<? extends XnatExperimentdataI> sessionsI = project.getExperiments();
 
-        checkEntity.setTotalSessions(sessions.size());
+        checkEntity.setTotalSessions(sessionsI.size());
         checkDao.update(checkEntity);
 
         int processedSessions = 0;
 
-        for (XnatExperimentdata session : sessions) {
+        for (XnatExperimentdataI sessionI : sessionsI) {
             if (isCancelled(checkId) || (maxFiles != null && totalFiles.get() >= maxFiles)) {
                 break;
             }
+
+            if (!(sessionI instanceof XnatExperimentdata)) {
+                continue;
+            }
+            XnatExperimentdata session = (XnatExperimentdata) sessionI;
 
             checkEntity.setCurrentSession(session.getLabel());
             checkDao.update(checkEntity);
@@ -193,44 +211,53 @@ public class AsyncFilesystemCheckService {
         List<Future<?>> futures = new ArrayList<>();
 
         // Process session resources
-        for (XnatAbstractresource resource : imageSession.getResources_resource()) {
+        for (XnatAbstractresourceI resourceI : imageSession.getResources_resource()) {
             if (isCancelled(checkId) || (maxFiles != null && totalFiles.get() >= maxFiles)) {
                 break;
             }
-            futures.add(fileCheckExecutor.submit(() ->
-                    processResource(checkId, projectId, sessionLabel, resource, "session",
-                            null, null, archivePath, totalFiles, processedFiles,
-                            filesFound, filesMissing, filesUnresolved, maxFiles)
-            ));
+            if (resourceI instanceof XnatAbstractresource) {
+                XnatAbstractresource resource = (XnatAbstractresource) resourceI;
+                futures.add(fileCheckExecutor.submit(() ->
+                        processResource(checkId, projectId, sessionLabel, resource, "session",
+                                null, null, archivePath, totalFiles, processedFiles,
+                                filesFound, filesMissing, filesUnresolved, maxFiles)
+                ));
+            }
         }
 
         // Process scan resources
-        for (XnatImagescandata scan : imageSession.getScans_scan()) {
+        for (XnatImagescandataI scanI : imageSession.getScans_scan()) {
             if (isCancelled(checkId) || (maxFiles != null && totalFiles.get() >= maxFiles)) {
                 break;
             }
-            String scanId = scan.getId();
-            for (XnatAbstractresource resource : scan.getFile()) {
-                futures.add(fileCheckExecutor.submit(() ->
-                        processResource(checkId, projectId, sessionLabel, resource, "scan",
-                                scanId, null, archivePath, totalFiles, processedFiles,
-                                filesFound, filesMissing, filesUnresolved, maxFiles)
-                ));
+            String scanId = scanI.getId();
+            for (XnatAbstractresourceI resourceI : scanI.getFile()) {
+                if (resourceI instanceof XnatAbstractresource) {
+                    XnatAbstractresource resource = (XnatAbstractresource) resourceI;
+                    futures.add(fileCheckExecutor.submit(() ->
+                            processResource(checkId, projectId, sessionLabel, resource, "scan",
+                                    scanId, null, archivePath, totalFiles, processedFiles,
+                                    filesFound, filesMissing, filesUnresolved, maxFiles)
+                    ));
+                }
             }
         }
 
         // Process assessor resources
-        for (XnatImageassessordata assessor : imageSession.getAssessors_assessor()) {
+        for (XnatImageassessordataI assessorI : imageSession.getAssessors_assessor()) {
             if (isCancelled(checkId) || (maxFiles != null && totalFiles.get() >= maxFiles)) {
                 break;
             }
-            String assessorId = assessor.getId();
-            for (XnatAbstractresource resource : assessor.getOut_file()) {
-                futures.add(fileCheckExecutor.submit(() ->
-                        processResource(checkId, projectId, sessionLabel, resource, "assessor",
-                                null, assessorId, archivePath, totalFiles, processedFiles,
-                                filesFound, filesMissing, filesUnresolved, maxFiles)
-                ));
+            String assessorId = assessorI.getId();
+            for (XnatAbstractresourceI resourceI : assessorI.getOut_file()) {
+                if (resourceI instanceof XnatAbstractresource) {
+                    XnatAbstractresource resource = (XnatAbstractresource) resourceI;
+                    futures.add(fileCheckExecutor.submit(() ->
+                            processResource(checkId, projectId, sessionLabel, resource, "assessor",
+                                    null, assessorId, archivePath, totalFiles, processedFiles,
+                                    filesFound, filesMissing, filesUnresolved, maxFiles)
+                    ));
+                }
             }
         }
 
@@ -256,47 +283,60 @@ public class AsyncFilesystemCheckService {
             return;
         }
 
-        XnatResourcecatalog catalog = (XnatResourcecatalog) resource;
+        XnatResourcecatalog catalogResource = (XnatResourcecatalog) resource;
         String resourceLabel = resource.getLabel();
 
         List<FileCheckResultEntity> batch = new ArrayList<>();
 
-        for (Object fileObj : catalog.getFile()) {
-            if (isCancelled(checkId) || (maxFiles != null && totalFiles.get() >= maxFiles)) {
-                break;
+        try {
+            // Build resource path for catalog lookup
+            String resourcePath = buildResourcePath(archivePath, projectId, sessionLabel, scanId, assessorId, resourceLabel);
+            CatCatalogBean catalog = catalogResource.getCatalog(resourcePath);
+
+            if (catalog == null || catalog.getEntries_entry() == null) {
+                log.debug("No catalog entries found for resource {} in {}/{}", resourceLabel, projectId, sessionLabel);
+                return;
             }
 
-            if (fileObj instanceof XnatAbstractresourceFile) {
-                XnatAbstractresourceFile file = (XnatAbstractresourceFile) fileObj;
-                totalFiles.incrementAndGet();
+            for (Object entryObj : catalog.getEntries_entry()) {
+                if (isCancelled(checkId) || (maxFiles != null && totalFiles.get() >= maxFiles)) {
+                    break;
+                }
 
-                FileCheckResultEntity result = checkFileAndCreateEntity(checkId, projectId,
-                        sessionLabel, resourceLabel, scope, scanId, assessorId,
-                        file, archivePath);
+                if (entryObj instanceof CatEntryBean) {
+                    CatEntryBean entry = (CatEntryBean) entryObj;
+                    totalFiles.incrementAndGet();
 
-                if (result != null) {
-                    batch.add(result);
-                    processedFiles.incrementAndGet();
+                    FileCheckResultEntity result = checkFileAndCreateEntity(checkId, projectId,
+                            sessionLabel, resourceLabel, scope, scanId, assessorId,
+                            entry, resourcePath);
 
-                    switch (result.getStatus()) {
-                        case "found":
-                            filesFound.incrementAndGet();
-                            break;
-                        case "missing":
-                            filesMissing.incrementAndGet();
-                            break;
-                        case "unresolved":
-                            filesUnresolved.incrementAndGet();
-                            break;
-                    }
+                    if (result != null) {
+                        batch.add(result);
+                        processedFiles.incrementAndGet();
 
-                    // Batch save every 50 records
-                    if (batch.size() >= 50) {
-                        resultDao.saveBatch(batch);
-                        batch.clear();
+                        switch (result.getStatus()) {
+                            case "found":
+                                filesFound.incrementAndGet();
+                                break;
+                            case "missing":
+                                filesMissing.incrementAndGet();
+                                break;
+                            case "unresolved":
+                                filesUnresolved.incrementAndGet();
+                                break;
+                        }
+
+                        // Batch save every 50 records
+                        if (batch.size() >= 50) {
+                            resultDao.saveBatch(batch);
+                            batch.clear();
+                        }
                     }
                 }
             }
+        } catch (Exception e) {
+            log.error("Error processing resource {} in {}/{}: {}", resourceLabel, projectId, sessionLabel, e.getMessage());
         }
 
         // Save remaining batch
@@ -305,17 +345,53 @@ public class AsyncFilesystemCheckService {
         }
     }
 
+    private String buildResourcePath(String archivePath, String projectId, String sessionLabel,
+                                     String scanId, String assessorId, String resourceLabel) {
+        StringBuilder path = new StringBuilder();
+        if (archivePath != null) {
+            path.append(archivePath);
+            if (!archivePath.endsWith("/")) {
+                path.append("/");
+            }
+        }
+
+        // Try to find arc directory
+        File projectDir = new File(path.toString() + projectId);
+        if (projectDir.exists()) {
+            File[] arcDirs = projectDir.listFiles(f -> f.isDirectory() && f.getName().startsWith("arc"));
+            if (arcDirs != null && arcDirs.length > 0) {
+                path.append(projectId).append("/").append(arcDirs[0].getName()).append("/");
+            } else {
+                path.append(projectId).append("/");
+            }
+        }
+
+        path.append(sessionLabel).append("/");
+
+        if (scanId != null) {
+            path.append("SCANS/").append(scanId).append("/");
+        } else if (assessorId != null) {
+            path.append("ASSESSORS/").append(assessorId).append("/");
+        } else {
+            path.append("RESOURCES/");
+        }
+
+        path.append(resourceLabel).append("/");
+        return path.toString();
+    }
+
     private FileCheckResultEntity checkFileAndCreateEntity(String checkId, String projectId,
                                                           String sessionLabel, String resourceLabel,
                                                           String scope, String scanId,
                                                           String assessorId,
-                                                          XnatAbstractresourceFile file,
-                                                          String archivePath) {
+                                                          CatEntryBean entry,
+                                                          String resourcePath) {
 
-        String fileName = file.getName();
+        String fileName = entry.getName();
+        String uri = entry.getUri();
 
         try {
-            Path filePath = resolveFilePath(file, archivePath, projectId, sessionLabel,
+            Path filePath = resolveFilePath(uri, resourcePath, projectId, sessionLabel,
                     resourceLabel, scanId, assessorId);
 
             FileCheckResultEntity.FileCheckResultEntityBuilder builder = FileCheckResultEntity.builder()
@@ -361,11 +437,9 @@ public class AsyncFilesystemCheckService {
         }
     }
 
-    private Path resolveFilePath(XnatAbstractresourceFile file, String archivePath,
+    private Path resolveFilePath(String uri, String resourcePath,
                                 String projectId, String sessionLabel, String resourceLabel,
                                 String scanId, String assessorId) {
-
-        String uri = file.getUri();
 
         // Strategy 1: Absolute path
         if (uri != null && uri.startsWith("/")) {
@@ -375,45 +449,22 @@ public class AsyncFilesystemCheckService {
             }
         }
 
-        // Strategy 2: Relative to archive
-        if (archivePath != null && uri != null) {
+        // Strategy 2: Relative to resource path
+        if (resourcePath != null && uri != null) {
             String relativePath = uri;
             if (relativePath.contains("/files/")) {
                 relativePath = relativePath.substring(relativePath.indexOf("/files/") + 7);
             }
 
-            Path resolved = Paths.get(archivePath, relativePath);
+            Path resolved = Paths.get(resourcePath, relativePath);
             if (Files.exists(resolved)) {
                 return resolved;
             }
 
-            // Strategy 3: Standard XNAT structure
-            StringBuilder pathBuilder = new StringBuilder(archivePath);
-            if (!archivePath.endsWith("/")) {
-                pathBuilder.append("/");
-            }
-            pathBuilder.append(projectId).append("/");
-
-            File projectDir = new File(pathBuilder.toString());
-            if (projectDir.exists()) {
-                File[] arcDirs = projectDir.listFiles(f -> f.isDirectory() && f.getName().startsWith("arc"));
-                if (arcDirs != null && arcDirs.length > 0) {
-                    pathBuilder = new StringBuilder(arcDirs[0].getAbsolutePath());
-                    pathBuilder.append("/").append(sessionLabel);
-
-                    if (scanId != null) {
-                        pathBuilder.append("/SCANS/").append(scanId);
-                    } else if (assessorId != null) {
-                        pathBuilder.append("/ASSESSORS/").append(assessorId);
-                    }
-
-                    pathBuilder.append("/").append(resourceLabel).append("/").append(file.getName());
-
-                    Path standardPath = Paths.get(pathBuilder.toString());
-                    if (Files.exists(standardPath)) {
-                        return standardPath;
-                    }
-                }
+            // Also try without leading path segments
+            Path directPath = Paths.get(resourcePath, uri);
+            if (Files.exists(directPath)) {
+                return directPath;
             }
         }
 

@@ -1,3 +1,10 @@
+/*
+ * XNAT Filesystem Check Plugin
+ * Copyright (c) 2025 XNATWorks.
+ * All rights reserved.
+ *
+ * This software is distributed under the terms described in the LICENSE file.
+ */
 package org.nrg.xnat.plugin.filesystemcheck.services;
 
 import lombok.extern.slf4j.Slf4j;
@@ -10,7 +17,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
-@Service
+@Service("fsCheckProgressService")
 public class ProgressTrackingService {
 
     private final Map<String, CheckProgress> activeChecks = new ConcurrentHashMap<>();
