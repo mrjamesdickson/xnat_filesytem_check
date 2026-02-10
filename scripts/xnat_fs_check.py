@@ -264,20 +264,25 @@ class XNATClient:
         self,
         resource_row: Dict,
         *,
-        project_label: Optional[str] = None,
-        session_label: Optional[str] = None,
+        experiment_uri: Optional[str] = None,
         resource_label: Optional[str] = None,
+        scan_id: Optional[str] = None,
+        assessor_id: Optional[str] = None,
     ) -> Iterator[Dict]:
         resource_uri = resource_row.get("URI") or resource_row.get("uri")
         if resource_uri:
             path = resource_uri.rstrip("/") + "/files"
         else:
-            # Prefer project/session/resource label path, since resource IDs are not always resolvable.
-            if project_label and session_label and resource_label:
-                path = (
-                    f"/data/archive/projects/{quote(project_label)}/experiments/"
-                    f"{quote(session_label)}/resources/{quote(resource_label)}/files"
-                )
+            # Build scoped path using the experiment URI (e.g. /data/experiments/XNAT_E00818)
+            # which is more reliable than /data/archive/projects/{label}/experiments/{label}.
+            if experiment_uri and resource_label:
+                base = experiment_uri.rstrip("/")
+                if scan_id:
+                    path = f"{base}/scans/{quote(scan_id)}/resources/{quote(resource_label)}/files"
+                elif assessor_id:
+                    path = f"{base}/assessors/{quote(assessor_id)}/resources/{quote(resource_label)}/files"
+                else:
+                    path = f"{base}/resources/{quote(resource_label)}/files"
             else:
                 resource_id = _first_value(
                     resource_row, ("ID", "id", "xnat_abstractresource_id", "label", "name")
@@ -876,6 +881,7 @@ class FilesystemChecker:
 
                 for experiment_row in experiments:
                     session_label = self._experiment_label(experiment_row)
+                    experiment_uri = experiment_row.get("URI") or experiment_row.get("uri")
                     stats["sessions"] += 1
                     project_stats["sessions"] += 1
                     LOG.debug("  Session: %s", session_label)
@@ -899,6 +905,7 @@ class FilesystemChecker:
                             resource_row,
                             project_label=project_label,
                             session_label=session_label,
+                            experiment_uri=experiment_uri,
                             scope="session",
                             project_stats=project_stats,
                         ):
@@ -945,6 +952,7 @@ class FilesystemChecker:
                                 resource_row,
                                 project_label=project_label,
                                 session_label=session_label,
+                                experiment_uri=experiment_uri,
                                 scope="scan",
                                 scan_id=scan_label,
                                 project_stats=project_stats,
@@ -992,6 +1000,7 @@ class FilesystemChecker:
                                 resource_row,
                                 project_label=project_label,
                                 session_label=session_label,
+                                experiment_uri=experiment_uri,
                                 scope="assessor",
                                 assessor_id=assessor_label,
                                 project_stats=project_stats,
@@ -1074,6 +1083,7 @@ class FilesystemChecker:
         *,
         project_label: str,
         session_label: str,
+        experiment_uri: Optional[str] = None,
         scope: str,
         scan_id: Optional[str] = None,
         assessor_id: Optional[str] = None,
@@ -1134,9 +1144,10 @@ class FilesystemChecker:
             file_rows = list(
                 self.client.iter_resource_files(
                     resource_row,
-                    project_label=project_label,
-                    session_label=session_label,
+                    experiment_uri=experiment_uri,
                     resource_label=resource_label,
+                    scan_id=scan_id,
+                    assessor_id=assessor_id,
                 )
             )
             resource_record["status"] = "ok"
