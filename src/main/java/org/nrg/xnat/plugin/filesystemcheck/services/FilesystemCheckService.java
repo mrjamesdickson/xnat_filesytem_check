@@ -331,7 +331,7 @@ public class FilesystemCheckService {
             }
         }
 
-        // Try to find arc directory
+        // Try to find arc directory on disk; fall back to conventional arc001
         File projectDir = new File(path.toString() + projectId);
         if (projectDir.exists()) {
             File[] arcDirs = projectDir.listFiles(f -> f.isDirectory() && f.getName().startsWith("arc"));
@@ -340,6 +340,10 @@ public class FilesystemCheckService {
             } else {
                 path.append(projectId).append("/");
             }
+        } else {
+            // Project directory not found on disk — use conventional layout
+            // so the report shows the expected location.
+            path.append(projectId).append("/arc001/");
         }
 
         path.append(sessionLabel).append("/");

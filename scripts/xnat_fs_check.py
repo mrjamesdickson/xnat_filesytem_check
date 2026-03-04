@@ -366,6 +366,7 @@ class CheckReport:
     stats: Dict[str, int] = field(default_factory=dict)
     project_summaries: Dict[str, Dict[str, int]] = field(default_factory=dict)
     missing_files: List[Dict[str, str]] = field(default_factory=list)
+    missing_sessions: List[Dict[str, str]] = field(default_factory=list)
     unresolved_files: List[Dict[str, str]] = field(default_factory=list)
     resource_details: List[Dict[str, Any]] = field(default_factory=list)
     catalog_missing_entries: List[Dict[str, str]] = field(default_factory=list)
@@ -378,6 +379,7 @@ class CheckReport:
             "stats": dict(self.stats),
             "project_summaries": dict(self.project_summaries),
             "missing_files": list(self.missing_files),
+            "missing_sessions": list(self.missing_sessions),
             "unresolved_files": list(self.unresolved_files),
             "resource_details": list(self.resource_details),
             "catalog_missing_entries": list(self.catalog_missing_entries),
@@ -391,7 +393,7 @@ class CheckReport:
                 "Projects: {projects} | Sessions: {sessions} | Resources: {resources} | "
                 "Files checked: {files_total}"
             ).format(**self.stats),
-            "Scans: {scans} | Assessors: {assessors}".format(**self.stats),
+            "Scans: {scans} | Assessors: {assessors} | Sessions missing: {sessions_missing}".format(**self.stats),
             (
                 "Session resources: {session_resources} | Scan resources: {scan_resources} | "
                 "Assessor resources: {assessor_resources}"
@@ -418,6 +420,14 @@ class CheckReport:
                     f"unresolved={pstats.get('files_unresolved', 0)}"
                 )
 
+        if self.missing_sessions:
+            lines.append("Missing session directories:")
+            for entry in self.missing_sessions:
+                lines.append(
+                    "  project={project} session={session} expected_path={expected_path}".format(
+                        **{k: entry.get(k, "") for k in ("project", "session", "expected_path")}
+                    )
+                )
         if self.missing_files:
             lines.append("Missing files:")
             for entry in self.missing_files:
@@ -541,6 +551,21 @@ class CheckReport:
                 "<thead><tr>" + header_html + "</tr></thead>"
                 "<tbody>" + rows_html + "</tbody>"
                 "</table>"
+            )
+
+        missing_sessions_section = ""
+        if self.missing_sessions:
+            missing_sessions_section = (
+                "<h2>Missing Session Directories</h2>"
+                + render_table(
+                    self.missing_sessions,
+                    [
+                        ("project", "Project"),
+                        ("session", "Session"),
+                        ("expected_path", "Expected Path"),
+                    ],
+                    table_class="detail sortable",
+                )
             )
 
         missing_section = ""
@@ -701,6 +726,7 @@ class CheckReport:
                 for title, fields in stat_sections
             )
             + self._render_project_summary_section(render_table)
+            + missing_sessions_section
             + missing_section
             + unresolved_section
             + resource_section
@@ -831,6 +857,7 @@ class FilesystemChecker:
             "session_resources": 0,
             "scan_resources": 0,
             "assessor_resources": 0,
+            "sessions_missing": 0,
             "files_total": 0,
             "files_found": 0,
             "files_missing": 0,
@@ -850,19 +877,23 @@ class FilesystemChecker:
         try:
             for project_row in self.client.iter_projects():
                 project_label = self._project_label(project_row)
-                if include and project_label.lower() not in include:
+                project_id = self._project_id(project_row)
+                # Match on either label or ID so users can filter by either
+                project_keys = {project_label.lower(), project_id.lower()}
+                if include and not (project_keys & include):
                     LOG.debug("Skipping project %s (not in include list)", project_label)
                     continue
-                if skip and project_label.lower() in skip:
+                if skip and (project_keys & skip):
                     LOG.debug("Skipping project %s (skip list)", project_label)
                     continue
 
                 stats["projects"] += 1
-                LOG.info("Project: %s", project_label)
+                LOG.info("Project: %s (id=%s)", project_label, project_id)
 
                 # Initialize per-project stats
                 project_stats = {
                     "sessions": 0,
+                    "sessions_missing": 0,
                     "scans": 0,
                     "assessors": 0,
                     "resources": 0,
@@ -886,6 +917,26 @@ class FilesystemChecker:
                     project_stats["sessions"] += 1
                     LOG.debug("  Session: %s", session_label)
 
+                    # Check whether the session directory exists on the filesystem.
+                    session_dir = self._check_session_dir(project_id, session_label)
+                    if session_dir is None and self.data_root:
+                        expected = self._expected_session_path(project_id, session_label)
+                        if expected:
+                            stats["sessions_missing"] += 1
+                            project_stats["sessions_missing"] += 1
+                            LOG.error(
+                                "  Missing session directory: %s/%s -> %s",
+                                project_label,
+                                session_label,
+                                expected,
+                            )
+                            report.missing_sessions.append({
+                                "project": project_label,
+                                "project_id": project_id,
+                                "session": session_label,
+                                "expected_path": str(expected),
+                            })
+
                     try:
                         resources = list(self.client.iter_experiment_resources(experiment_row))
                     except requests.RequestException as exc:
@@ -904,6 +955,7 @@ class FilesystemChecker:
                             catalog_paths,
                             resource_row,
                             project_label=project_label,
+                            project_id=project_id,
                             session_label=session_label,
                             experiment_uri=experiment_uri,
                             scope="session",
@@ -951,6 +1003,7 @@ class FilesystemChecker:
                                 catalog_paths,
                                 resource_row,
                                 project_label=project_label,
+                                project_id=project_id,
                                 session_label=session_label,
                                 experiment_uri=experiment_uri,
                                 scope="scan",
@@ -999,6 +1052,7 @@ class FilesystemChecker:
                                 catalog_paths,
                                 resource_row,
                                 project_label=project_label,
+                                project_id=project_id,
                                 session_label=session_label,
                                 experiment_uri=experiment_uri,
                                 scope="assessor",
@@ -1019,6 +1073,16 @@ class FilesystemChecker:
     @staticmethod
     def _project_label(project_row: Dict) -> str:
         return _first_value(project_row, ("label", "name", "ID", "id", "project")) or "UNKNOWN_PROJECT"
+
+    @staticmethod
+    def _project_id(project_row: Dict) -> str:
+        """Return the project ID used for the archive filesystem directory.
+
+        XNAT uses the project ID (not the display name) as the directory name
+        under the archive root.  For example project 'CMB-MML' has the display
+        name 'Cancer Moonshot Biobank' but the archive directory is 'CMB-MML'.
+        """
+        return _first_value(project_row, ("ID", "id", "label", "name", "project")) or "UNKNOWN_PROJECT"
 
     @staticmethod
     def _experiment_label(experiment_row: Dict) -> str:
@@ -1082,6 +1146,7 @@ class FilesystemChecker:
         resource_row: Dict,
         *,
         project_label: str,
+        project_id: Optional[str] = None,
         session_label: str,
         experiment_uri: Optional[str] = None,
         scope: str,
@@ -1115,12 +1180,16 @@ class FilesystemChecker:
         if assessor_id is not None:
             resource_record["assessor"] = assessor_id
 
+        # Use project_id for filesystem paths (XNAT uses the ID, not the
+        # display name, as the archive directory name).
+        fs_project = project_id or project_label
+
         catalog_path: Optional[Path] = None
         base_dir: Optional[Path] = None
         if self.verify_catalogs:
             catalog_path = self._resolve_catalog_path(
                 resource_row,
-                project_label=project_label,
+                project_label=fs_project,
                 session_label=session_label,
                 resource_label=resource_label,
                 scan_id=scan_id,
@@ -1133,7 +1202,7 @@ class FilesystemChecker:
 
         if base_dir is None:
             base_dir = self._resource_dir(
-                project_label,
+                fs_project,
                 session_label,
                 resource_label,
                 scan_id=scan_id,
@@ -1247,7 +1316,7 @@ class FilesystemChecker:
                 fallback_bases: List[Optional[Path]] = []
                 if scope != "session":
                     fallback_bases.append(
-                        self._resource_dir(project_label, session_label, resource_label)
+                        self._resource_dir(fs_project, session_label, resource_label)
                     )
                 fallback_bases.append(self.data_root)
                 for base in fallback_bases:
@@ -1350,6 +1419,43 @@ class FilesystemChecker:
             return Path(name_value)
         return None
 
+    def _check_session_dir(
+        self,
+        project_id: str,
+        session_label: str,
+    ) -> Optional[Path]:
+        """Check whether the expected session directory exists on disk.
+
+        Returns the session directory path if found, or None if missing.
+        When the archive directory or project directory doesn't exist,
+        returns None (the session cannot be verified).
+        """
+        if not self.data_root:
+            return None
+        project_dir = self.data_root / project_id
+        if not project_dir.exists():
+            return None
+        # Look for arc* directories (e.g. arc001)
+        for arc_dir in sorted(project_dir.glob("arc*")):
+            session_dir = arc_dir / session_label
+            if session_dir.exists():
+                return session_dir
+        # Also check directly under project (no arc directory)
+        session_dir = project_dir / session_label
+        if session_dir.exists():
+            return session_dir
+        return None
+
+    def _expected_session_path(
+        self,
+        project_id: str,
+        session_label: str,
+    ) -> Optional[Path]:
+        """Return the conventional expected session path for reporting."""
+        if not self.data_root:
+            return None
+        return self.data_root / project_id / "arc001" / session_label
+
     def _resource_dir(
         self,
         project_label: str,
@@ -1369,19 +1475,50 @@ class FilesystemChecker:
             return cache[cache_key]
 
         project_dir = self.data_root / project_label
-        if not project_dir.exists():
-            cache[cache_key] = None
-            return None
 
-        # Common XNAT archives use arcNNN directories beneath the project.
-        # Common archive layout: arcNNN directories under project -> session -> RESOURCES -> resource.
-        for arc_dir in sorted(project_dir.glob("arc*")):
-            base_session_dir = arc_dir / session_label
+        if project_dir.exists():
+            # Common XNAT archives use arcNNN directories beneath the project.
+            for arc_dir in sorted(project_dir.glob("arc*")):
+                base_session_dir = arc_dir / session_label
 
+                if scan_id:
+                    candidates = [
+                        base_session_dir / "SCANS" / scan_id / resource_label,
+                        base_session_dir / "SCANS" / scan_id / "RESOURCES" / resource_label,
+                    ]
+                    for candidate in candidates:
+                        if candidate.exists():
+                            cache[cache_key] = candidate
+                            return candidate
+
+                if assessor_id:
+                    candidates = [
+                        base_session_dir / "ASSESSORS" / assessor_id / resource_label,
+                        base_session_dir
+                        / "ASSESSORS"
+                        / assessor_id
+                        / "RESOURCES"
+                        / resource_label,
+                    ]
+                    for candidate in candidates:
+                        if candidate.exists():
+                            cache[cache_key] = candidate
+                            return candidate
+
+                candidate = base_session_dir / "RESOURCES" / resource_label
+                if candidate.exists():
+                    cache[cache_key] = candidate
+                    return candidate
+                candidate_lower = base_session_dir / "resources" / resource_label
+                if candidate_lower.exists():
+                    cache[cache_key] = candidate_lower
+                    return candidate_lower
+
+            # Alternative: session folders directly under project (no arc directory).
             if scan_id:
                 candidates = [
-                    base_session_dir / "SCANS" / scan_id / resource_label,
-                    base_session_dir / "SCANS" / scan_id / "RESOURCES" / resource_label,
+                    project_dir / session_label / "SCANS" / scan_id / resource_label,
+                    project_dir / session_label / "SCANS" / scan_id / "RESOURCES" / resource_label,
                 ]
                 for candidate in candidates:
                     if candidate.exists():
@@ -1390,8 +1527,9 @@ class FilesystemChecker:
 
             if assessor_id:
                 candidates = [
-                    base_session_dir / "ASSESSORS" / assessor_id / resource_label,
-                    base_session_dir
+                    project_dir / session_label / "ASSESSORS" / assessor_id / resource_label,
+                    project_dir
+                    / session_label
                     / "ASSESSORS"
                     / assessor_id
                     / "RESOURCES"
@@ -1402,60 +1540,52 @@ class FilesystemChecker:
                         cache[cache_key] = candidate
                         return candidate
 
-            candidate = base_session_dir / "RESOURCES" / resource_label
-            if candidate.exists():
-                cache[cache_key] = candidate
-                return candidate
-            candidate_lower = base_session_dir / "resources" / resource_label
-            if candidate_lower.exists():
-                cache[cache_key] = candidate_lower
-                return candidate_lower
+            direct_session = project_dir / session_label / "RESOURCES" / resource_label
+            if direct_session.exists():
+                cache[cache_key] = direct_session
+                return direct_session
 
-        # Alternative: session folders directly under project.
+            direct_session_lower = project_dir / session_label / "resources" / resource_label
+            if direct_session_lower.exists():
+                cache[cache_key] = direct_session_lower
+                return direct_session_lower
+
+            # Fallback: project-level RESOURCES directory (no session element).
+            for resources_dir_name in ("RESOURCES", "resources", "Resources"):
+                candidate = project_dir / resources_dir_name / resource_label
+                if candidate.exists():
+                    cache[cache_key] = candidate
+                    return candidate
+
+        # Nothing found on disk.  Construct the conventional expected path
+        # so the report shows where the file *should* be rather than a
+        # nonsensical path at the archive root.
+        expected = self._build_expected_resource_dir(
+            project_dir, session_label, resource_label, scan_id, assessor_id,
+        )
+        cache[cache_key] = expected
+        return expected
+
+    def _build_expected_resource_dir(
+        self,
+        project_dir: Path,
+        session_label: str,
+        resource_label: str,
+        scan_id: Optional[str] = None,
+        assessor_id: Optional[str] = None,
+    ) -> Path:
+        """Construct the conventional XNAT resource directory path.
+
+        Uses the standard ``project/arc001/session/SCANS|ASSESSORS|RESOURCES``
+        layout so that missing-file reports contain the expected location even
+        when the directory tree does not exist on disk.
+        """
+        base = project_dir / "arc001" / session_label
         if scan_id:
-            candidates = [
-                project_dir / session_label / "SCANS" / scan_id / resource_label,
-                project_dir / session_label / "SCANS" / scan_id / "RESOURCES" / resource_label,
-            ]
-            for candidate in candidates:
-                if candidate.exists():
-                    cache[cache_key] = candidate
-                    return candidate
-
+            return base / "SCANS" / scan_id / resource_label
         if assessor_id:
-            candidates = [
-                project_dir / session_label / "ASSESSORS" / assessor_id / resource_label,
-                project_dir
-                / session_label
-                / "ASSESSORS"
-                / assessor_id
-                / "RESOURCES"
-                / resource_label,
-            ]
-            for candidate in candidates:
-                if candidate.exists():
-                    cache[cache_key] = candidate
-                    return candidate
-
-        direct_session = project_dir / session_label / "RESOURCES" / resource_label
-        if direct_session.exists():
-            cache[cache_key] = direct_session
-            return direct_session
-
-        direct_session_lower = project_dir / session_label / "resources" / resource_label
-        if direct_session_lower.exists():
-            cache[cache_key] = direct_session_lower
-            return direct_session_lower
-
-        # Fallback: project-level RESOURCES directory (no session element).
-        for resources_dir_name in ("RESOURCES", "resources", "Resources"):
-            candidate = project_dir / resources_dir_name / resource_label
-            if candidate.exists():
-                cache[cache_key] = candidate
-                return candidate
-
-        cache[cache_key] = None
-        return None
+            return base / "ASSESSORS" / assessor_id / resource_label
+        return base / "RESOURCES" / resource_label
 
     def _resolve_catalog_path(
         self,
@@ -1644,6 +1774,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if report.unresolved_files:
         LOG.warning("Unable to resolve %d file paths; adjust --path-key or --data-root.", len(report.unresolved_files))
 
+    if report.missing_sessions:
+        LOG.error("Detected %d missing session directories.", len(report.missing_sessions))
+        for entry in report.missing_sessions:
+            LOG.error(
+                "Missing session directory: project=%s session=%s expected_path=%s",
+                entry["project"],
+                entry["session"],
+                entry["expected_path"],
+            )
+
     if report.missing_files:
         LOG.error("Detected %d missing files.", len(report.missing_files))
         for entry in report.missing_files:
@@ -1654,8 +1794,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 entry["resource"],
                 entry["path"],
             )
-        if args.fail_on_missing:
-            return 2
+
+    if (report.missing_sessions or report.missing_files) and args.fail_on_missing:
+        return 2
 
     report_outputs: List[Tuple[str, Path]] = []
     if args.report_file:

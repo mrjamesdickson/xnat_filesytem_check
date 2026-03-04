@@ -124,7 +124,8 @@ class TestCheckReport(unittest.TestCase):
 
     def _make_report(self, **kwargs) -> CheckReport:
         stats = {
-            "projects": 1, "sessions": 2, "scans": 3, "assessors": 0,
+            "projects": 1, "sessions": 2, "sessions_missing": 0,
+            "scans": 3, "assessors": 0,
             "resources": 4, "session_resources": 1, "scan_resources": 3,
             "assessor_resources": 0, "files_total": 10, "files_found": 8,
             "files_missing": 1, "files_unresolved": 1,
@@ -332,6 +333,91 @@ class TestIterResourceFilesURLConstruction(unittest.TestCase):
         self.assertIn("scan%201", url)
         self.assertIn("My%20Resource", url)
         client.close()
+
+
+class TestResourceDirFallback(unittest.TestCase):
+    """Test that _resource_dir returns an expected conventional path when
+    the directory tree does not exist on disk, rather than returning None
+    which causes files to be resolved against the archive root."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        # Resolve to handle macOS /var -> /private/var symlinks
+        self.data_root = (Path(self.tmpdir) / "archive").resolve()
+        self.data_root.mkdir()
+        self.client = XNATClient("http://example.com", token="t")
+        self.checker = FilesystemChecker(
+            self.client, data_root=self.data_root, max_files=10,
+        )
+
+    def tearDown(self):
+        self.client.close()
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_missing_project_returns_expected_scan_path(self):
+        """When the project directory does not exist on disk, the returned
+        path should use the conventional arc001 layout."""
+        result = self.checker._resource_dir(
+            "MyProject", "SESSION01", "DICOM", scan_id="1",
+        )
+        expected = self.data_root / "MyProject" / "arc001" / "SESSION01" / "SCANS" / "1" / "DICOM"
+        self.assertEqual(result, expected)
+
+    def test_missing_project_returns_expected_assessor_path(self):
+        result = self.checker._resource_dir(
+            "MyProject", "SESSION01", "DATA", assessor_id="XNAT_E00099",
+        )
+        expected = (
+            self.data_root / "MyProject" / "arc001" / "SESSION01"
+            / "ASSESSORS" / "XNAT_E00099" / "DATA"
+        )
+        self.assertEqual(result, expected)
+
+    def test_missing_project_returns_expected_session_resource_path(self):
+        result = self.checker._resource_dir(
+            "MyProject", "SESSION01", "SNAPSHOTS",
+        )
+        expected = (
+            self.data_root / "MyProject" / "arc001" / "SESSION01"
+            / "RESOURCES" / "SNAPSHOTS"
+        )
+        self.assertEqual(result, expected)
+
+    def test_existing_project_no_matching_dir_returns_expected_path(self):
+        """When the project dir exists but has no arc directory and the
+        session subpath doesn't exist, should still return a conventional path."""
+        (self.data_root / "MyProject").mkdir()
+        result = self.checker._resource_dir(
+            "MyProject", "SESSION01", "DICOM", scan_id="2",
+        )
+        expected = self.data_root / "MyProject" / "arc001" / "SESSION01" / "SCANS" / "2" / "DICOM"
+        self.assertEqual(result, expected)
+
+    def test_existing_dir_still_preferred(self):
+        """When the actual directory exists on disk, that path is returned
+        instead of the conventional fallback."""
+        scan_dir = (
+            self.data_root / "MyProject" / "arc001" / "SESSION01"
+            / "SCANS" / "1" / "DICOM"
+        )
+        scan_dir.mkdir(parents=True)
+        result = self.checker._resource_dir(
+            "MyProject", "SESSION01", "DICOM", scan_id="1",
+        )
+        self.assertEqual(result, scan_dir)
+
+    def test_project_with_spaces_returns_expected_path(self):
+        """Project names with spaces (e.g. 'CIF Data Store') should still
+        produce a valid expected path."""
+        result = self.checker._resource_dir(
+            "CIF Data Store", "IC3_10016_V1", "DICOM", scan_id="105",
+        )
+        expected = (
+            self.data_root / "CIF Data Store" / "arc001" / "IC3_10016_V1"
+            / "SCANS" / "105" / "DICOM"
+        )
+        self.assertEqual(result, expected)
 
 
 # ===================================================================
